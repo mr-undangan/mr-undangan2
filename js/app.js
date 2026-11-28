@@ -1,6 +1,6 @@
 // =========================================================================
 // LEMBARKU & TITIK GOWES — MAIN APP CONTROLLER (js/app.js)
-// Versi: V14.9 (Pengaturan Rapi, Konten & Media Beranda, Share Contoh & Kontrol Zoom Selektif)
+// Versi: V14.10 (Pengaturan Rapi, Konten & Media Beranda, Share Contoh & Kontrol Zoom Selektif)
 // =========================================================================
 const USER_CACHE_KEY = "MR_UNDANGAN_USER_OBJ";
 let deferredPwaPrompt = null;
@@ -171,6 +171,7 @@ function ensureUserInLocalDb(userObj) {
     if (idx >= 0) db.users[idx] = Object.assign({}, db.users[idx], cleanObj);
     else db.users.push(cleanObj);
     try { localStorage.setItem(USER_CACHE_KEY, JSON.stringify(cleanObj)); } catch {}
+    if (typeof idbSet === "function") idbSet("db_snapshot", db);
 }
 
 async function handleAuthSubmit(e) {
@@ -388,6 +389,22 @@ function _mrCloseTransientOverlayIfAny() {
         return "app-confirm-modal";
     }
     // Tangani Modal Titik Gowes
+    if (_isElVis("modal-doc-scanner")) {
+        if (typeof closeDocPerspectiveScanner === "function") closeDocPerspectiveScanner();
+        return "modal-doc-scanner";
+    }
+    if (_isElVis("modal-doc-camera")) {
+        if (typeof closeDocCameraCapture === "function") closeDocCameraCapture();
+        return "modal-doc-camera";
+    }
+    if (_isElVis("modal-bike-checkin")) {
+        if (typeof closeBikeCheckinModal === "function") closeBikeCheckinModal();
+        return "modal-bike-checkin";
+    }
+    if (_isElVis("modal-live-bikes-monitor")) {
+        if (typeof closeLiveBikesMonitorModal === "function") closeLiveBikesMonitorModal();
+        return "modal-live-bikes-monitor";
+    }
     if (_isElVis("modal-gowes-receipt")) {
         if (typeof closeGowesReceiptModal === "function") closeGowesReceiptModal();
         else document.getElementById("modal-gowes-receipt")?.classList.add("hide");
@@ -1425,14 +1442,17 @@ function _getFollowingListForUser(uObj) {
 
 function _getProjectsForUser(uObj) {
     const invs = Array.isArray(db.invitations) ? db.invitations.map(i => Object.assign({}, i, { _kind: "inv" })) : [];
-    const pfs = Array.isArray(db.portfolios) ? db.portfolios.map(p => Object.assign({}, p, { _kind: "pf" })) : [];
-    const combined = [...invs, ...pfs];
+    const rawPfs = Array.isArray(db.portfolios) ? db.portfolios.map(p => Object.assign({}, p, { _kind: "pf" })) : [];
     if (!uObj) return [];
     if (uObj.role === "master" || uObj.role === "administrasi") {
-        return combined;
+        // Transaksi Coin / Upgrade PRO / Add-On hanya muncul di Antrean saat belum ACC; jika sudah Aktif hanya tercatat di History Coin!
+        const staffPfs = rawPfs.filter(p => !(typeof isSystemCoinOrder === "function" && isSystemCoinOrder(p) && p.status === "Aktif"));
+        return [...invs, ...staffPfs];
     }
     const uKey = _normKey(uObj.username);
-    return combined.filter(d => _normKey(d.owner) === uKey);
+    // Untuk User Biasa & Cabang: JANGAN pernah masukkan transaksi tambah Coin / PRO / Add-on ke daftar Project!
+    const userPfs = rawPfs.filter(p => typeof isSystemCoinOrder !== "function" || !isSystemCoinOrder(p));
+    return [...invs, ...userPfs].filter(d => _normKey(d.owner) === uKey);
 }
 
 function _formatMasterFollowersDisplay() {
@@ -1848,12 +1868,19 @@ async function savePrivacySettings() {
     };
 
     setBtnLoading("btn-save-privacy", true, "Menyimpan...");
+    if (typeof _saveLocalPrivacyCache === "function") _saveLocalPrivacyCache(u.username, privacy);
+
     const res = await apiAction({ action: "update_privacy", privacy });
+    // Simpan ulang seluruh 9 opsi privasi via upsert_user agar server lama tidak membuang 3 field baru
+    const mergedUser = Object.assign({}, u, (res && res.user) || {}, { privacy });
+    delete mergedUser.password;
+    const resUp = await apiAction({ action: "upsert_user", oldUsername: u.username, user: mergedUser });
     setBtnLoading("btn-save-privacy", false);
 
-    if (res && res.ok) {
-        ensureUserInLocalDb(Object.assign({}, u, res.user || {}, { privacy }));
-        showToast("Pengaturan privasi berhasil disimpan!");
+    if ((res && res.ok) || (resUp && resUp.ok)) {
+        ensureUserInLocalDb(Object.assign({}, mergedUser, { privacy }));
+        refreshActiveViewSmart();
+        showToast("Pengaturan privasi berhasil disimpan permanen!");
     } else {
         showToast((res && res.message) || "Gagal menyimpan privasi.", "error");
     }
@@ -2368,9 +2395,13 @@ function buildFilmPosterDocCardHtml(doc, isCabang = false) {
     const isPf = doc._kind === "pf";
     const isAktif = doc.status === "Aktif";
     const isPay = doc.status === "Menunggu Pembayaran";
-    const edLeft = Math.max(0, 2 - Number(doc.editCount || 0));
-    const canEdit = isCabang ? true : (isAktif && edLeft > 0);
-    const editLabel = isCabang ? "Edit Berkas" : `Edit (${edLeft}x)`;
+    const rule = typeof getProjectEditRuleInfo === "function"
+        ? getProjectEditRuleInfo(doc, isCabang)
+        : { isCv: isPf && doc.docType !== "lamaran", isExpired: false, daysLeft: 21, maxEdits: 2, editsLeft: Math.max(0, 2 - Number(doc.editCount || 0)), canEdit: isCabang ? true : isAktif, canBuyCvAddon: false, addonHalfPrice: 10000 };
+    const canEdit = rule.canEdit;
+    const editLabel = isCabang
+        ? (rule.isCv ? "Edit Berkas" : `Edit (${rule.daysLeft}hr)`)
+        : (rule.isCv ? `Edit (${rule.editsLeft}x)` : `Edit (${rule.editsLeft}x • ${rule.daysLeft}hr)`);
     const statusCls = isAktif ? "bg-emerald-500/18 text-emerald-600" : isPay ? "app-accent-bg app-accent" : "bg-blue-500/18 text-blue-600";
 
     let leftCoverHtml = "";
@@ -2413,17 +2444,37 @@ function buildFilmPosterDocCardHtml(doc, isCabang = false) {
 
     let actionsHtml = "";
     if (isPf) {
+        const pfEditBtn = rule.isExpired
+            ? `<button disabled class="w-full py-1.5 rounded-xl app-btn-sec opacity-45 text-[11px] font-bold text-left px-3"><i class="fa-solid fa-lock w-4 mr-1"></i>Masa Edit Habis</button>`
+            : canEdit
+                ? `<button onclick="openEditPortfolio(${doc.id},${isCabang})" class="w-full py-1.5 rounded-xl app-card-soft border text-[11px] font-bold text-left px-3"><i class="fa-solid fa-pen w-4 mr-1"></i>${editLabel}</button>`
+                : rule.canBuyCvAddon
+                    ? `<button onclick="requestCvExtraEditsOrder(${doc.id})" class="w-full py-1.5 rounded-xl bg-amber-500/18 border border-amber-500/45 text-amber-700 text-[11px] font-extrabold text-left px-3"><i class="fa-solid fa-plus w-4 mr-1"></i>+2x Edit (${fmtRp(rule.addonHalfPrice)})</button>`
+                    : `<button disabled class="w-full py-1.5 rounded-xl app-btn-sec opacity-45 text-[11px] font-bold text-left px-3"><i class="fa-solid fa-lock w-4 mr-1"></i>Edit</button>`;
+
         actionsHtml = `
-            <button onclick="openPortfolioDocPreview(${doc.id},false)" class="w-full py-1.5 rounded-xl app-btn-sec text-[11px] font-bold text-left px-3"><i class="fa-regular fa-eye w-4 mr-1"></i>Lihat Ini</button>
-            ${canEdit ? `<button onclick="openEditPortfolio(${doc.id},${isCabang})" class="w-full py-1.5 rounded-xl app-card-soft border text-[11px] font-bold text-left px-3"><i class="fa-solid fa-pen w-4 mr-1"></i>${editLabel}</button>` : `<button disabled class="w-full py-1.5 rounded-xl app-btn-sec opacity-45 text-[11px] font-bold text-left px-3"><i class="fa-solid fa-lock w-4 mr-1"></i>Edit</button>`}
+            <div class="grid ${isAktif ? "grid-cols-[1fr_auto]" : "grid-cols-1"} gap-1">
+                <button onclick="openPortfolioDocPreview(${doc.id},false)" class="py-1.5 rounded-xl app-btn-sec text-[11px] font-bold text-left px-3"><i class="fa-regular fa-eye w-4 mr-1"></i>Lihat Ini</button>
+                ${isAktif ? `<button onclick="if(typeof openLembarkuOrderReceiptModal==='function')openLembarkuOrderReceiptModal('pf',${doc.id})" class="px-2.5 py-1.5 rounded-xl app-card-soft border text-[11px] font-bold" title="Cetak / Kirim Struk"><i class="fa-solid fa-receipt"></i></button>` : ""}
+            </div>
+            ${pfEditBtn}
             ${isPay ? `<button onclick="openUnifiedPayment('portfolio',${doc.id})" class="w-full py-1.5 rounded-xl gold-pill-btn text-[11px] text-left px-3"><i class="fa-solid fa-qrcode w-4 mr-1"></i>Konfirmasi Sekarang</button>`
                 : isAktif ? `<button onclick="openSempurnakanModal(${doc.id})" class="w-full py-1.5 rounded-xl gold-pill-btn text-[11px] text-left px-3"><i class="fa-solid fa-file-pdf w-4 mr-1"></i>Sempurnakan / PDF</button>`
                 : `<button disabled class="w-full py-1.5 rounded-xl app-btn-sec opacity-60 text-[11px] font-bold text-left px-3"><i class="fa-solid fa-clock w-4 mr-1"></i>Menunggu ACC</button>`}
         `;
     } else {
+        const invEditBtn = rule.isExpired
+            ? `<button disabled class="w-full py-1.5 rounded-xl app-btn-sec opacity-45 text-[11px] font-bold text-left px-3"><i class="fa-solid fa-lock w-4 mr-1"></i>Masa Edit Habis</button>`
+            : canEdit
+                ? `<button onclick="openEditInvitation(${doc.id},${isCabang})" class="w-full py-1.5 rounded-xl app-card-soft border text-[11px] font-bold text-left px-3"><i class="fa-solid fa-pen w-4 mr-1"></i>${editLabel}</button>`
+                : `<button disabled class="w-full py-1.5 rounded-xl app-btn-sec opacity-45 text-[11px] font-bold text-left px-3"><i class="fa-solid fa-lock w-4 mr-1"></i>Edit</button>`;
+
         actionsHtml = `
-            ${isAktif ? `<button onclick="openGuestView(${doc.id},'Tamu Kehormatan')" class="w-full py-1.5 rounded-xl app-btn-sec text-[11px] font-bold text-left px-3"><i class="fa-regular fa-eye w-4 mr-1"></i>Lihat Ini</button>` : `<button disabled class="w-full py-1.5 rounded-xl app-btn-sec opacity-45 text-[11px] font-bold text-left px-3"><i class="fa-solid fa-lock w-4 mr-1"></i>Lihat Ini</button>`}
-            ${canEdit ? `<button onclick="openEditInvitation(${doc.id},${isCabang})" class="w-full py-1.5 rounded-xl app-card-soft border text-[11px] font-bold text-left px-3"><i class="fa-solid fa-pen w-4 mr-1"></i>${editLabel}</button>` : `<button disabled class="w-full py-1.5 rounded-xl app-btn-sec opacity-45 text-[11px] font-bold text-left px-3"><i class="fa-solid fa-lock w-4 mr-1"></i>Edit</button>`}
+            <div class="grid ${isAktif ? "grid-cols-[1fr_auto]" : "grid-cols-1"} gap-1">
+                ${isAktif ? `<button onclick="openGuestView(${doc.id},'Tamu Kehormatan')" class="py-1.5 rounded-xl app-btn-sec text-[11px] font-bold text-left px-3"><i class="fa-regular fa-eye w-4 mr-1"></i>Lihat Ini</button>` : `<button disabled class="py-1.5 rounded-xl app-btn-sec opacity-45 text-[11px] font-bold text-left px-3"><i class="fa-solid fa-lock w-4 mr-1"></i>Lihat Ini</button>`}
+                ${isAktif ? `<button onclick="if(typeof openLembarkuOrderReceiptModal==='function')openLembarkuOrderReceiptModal('inv',${doc.id})" class="px-2.5 py-1.5 rounded-xl app-card-soft border text-[11px] font-bold" title="Cetak / Kirim Struk"><i class="fa-solid fa-receipt"></i></button>` : ""}
+            </div>
+            ${invEditBtn}
             ${isPay ? `<button onclick="openUnifiedPayment('inv',${doc.id})" class="w-full py-1.5 rounded-xl gold-pill-btn text-[11px] text-left px-3"><i class="fa-solid fa-qrcode w-4 mr-1"></i>Konfirmasi Sekarang</button>`
                 : isAktif ? (isCabang
                     ? `<div class="grid grid-cols-2 gap-1.5"><button onclick="openGuestListManager(${doc.id})" class="py-1.5 rounded-xl app-card-soft border app-accent text-[10px] font-bold">Tamu</button><button onclick="openClientPortalShareModal(${doc.id})" class="py-1.5 rounded-xl gold-pill-btn text-[10px]">Link Klien</button></div>`
@@ -2785,7 +2836,7 @@ if (document.readyState === "loading") {
     bootMrUndanganApp();
 }
 
-// ================= 10. BERBAGI CONTOH TEMA KE SELURUH MEDIA SOSIAL (V14.9) =================
+// ================= 10. BERBAGI CONTOH TEMA KE SELURUH MEDIA SOSIAL (V14.10) =================
 let _activeDemoShareData = { title: "", text: "", url: "", subtitle: "" };
 
 function openDemoSocialShare(data) {
@@ -2853,7 +2904,7 @@ function launchDemoShareChannel(channel) {
     }
 }
 
-// ================= 11. KUNCI ZOOM HALAMAN APLIKASI + ZOOM SELEKTIF FOTO/PREVIEW (V14.9) =================
+// ================= 11. KUNCI ZOOM HALAMAN APLIKASI + ZOOM SELEKTIF FOTO/PREVIEW (V14.10) =================
 const _selectiveZoomRegistry = new Map();
 
 function initGlobalAppZoomLock() {
@@ -3139,7 +3190,7 @@ function closeCabangCoinInfoModal() {
 function requestTopUpCoinViaChat() {
     closeCabangCoinInfoModal();
     if (typeof openFullChatOverlay === "function") {
-        openFullChatOverlay("admin_support");
+        openFullChatOverlay("founder_private");
         setTimeout(() => {
             const inp = document.getElementById("chat-input-text");
             if (inp) {
@@ -3363,7 +3414,7 @@ function shareOwnProfileLink() {
 }
 
 
-// ================= 16. HEARTBEAT STATUS ONLINE PENGGUNA (V14.9) =================
+// ================= 16. HEARTBEAT STATUS ONLINE PENGGUNA (V14.10) =================
 let _onlinePingTimer = null;
 let _lastOnlinePingTs = 0;
 

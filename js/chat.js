@@ -1,6 +1,6 @@
 // =========================================================================
 // LEMBARKU — LIVE CHAT, KONTAK BARU (+), PRIVASI, BLOKIR & NOTIFIKASI
-// File: js/chat.js (V14.3)
+// File: js/chat.js (V14.10)
 // =========================================================================
 const QUICK_REPLIES_STAFF = [
     "Halo Kak, ada yang bisa kami bantu?",
@@ -10,7 +10,8 @@ const QUICK_REPLIES_STAFF = [
 ];
 
 let tempChatAttachment = "";
-let _chatContactMasterFilter = "all"; // all | online | cabang | pro
+let _chatContactMasterFilter = "all";
+let _masterChatBoxTab = "private"; // "private" (Privat Founder) | "cs" (Pantau CS Tim Admin)
 let _lastKnownChatCount = -1;
 window.openedFromChatThread = null;
 window._chatOriginView = null;
@@ -67,15 +68,26 @@ window._restoreChatFromNav = function (stepObj) {
     renderFullChatOverlay();
 };
 
-function _isStaffUserOrKey(uObjOrKey) {
-    if (typeof uObjOrKey === "object" && uObjOrKey) {
-        return uObjOrKey.role === "master" || uObjOrKey.role === "administrasi";
-    }
+function _isFounderKey(uObjOrKey) {
+    if (typeof uObjOrKey === "object" && uObjOrKey) return uObjOrKey.role === "master";
     const key = _normChatKey(uObjOrKey);
     if (!key) return false;
-    if (key === _normChatKey(FOUNDER_USERNAME) || key === "admin_support") return true;
+    if (key === _normChatKey(FOUNDER_USERNAME) || key.startsWith("founder__")) return true;
     const u = (db.users || []).find(x => _normChatKey(x.username) === key);
-    return !!(u && (u.role === "master" || u.role === "administrasi"));
+    return !!(u && u.role === "master");
+}
+
+function _isAdminStaffKey(uObjOrKey) {
+    if (typeof uObjOrKey === "object" && uObjOrKey) return uObjOrKey.role === "administrasi";
+    const key = _normChatKey(uObjOrKey);
+    if (!key) return false;
+    if (key === "admin_support") return true;
+    const u = (db.users || []).find(x => _normChatKey(x.username) === key);
+    return !!(u && u.role === "administrasi");
+}
+
+function _isStaffUserOrKey(uObjOrKey) {
+    return _isFounderKey(uObjOrKey) || _isAdminStaffKey(uObjOrKey);
 }
 
 function _buildPeerDmThreadId(u1, u2) {
@@ -83,20 +95,78 @@ function _buildPeerDmThreadId(u1, u2) {
     return `dm_${pair[0]}__${pair[1]}`;
 }
 
+function _buildFounderPrivateThreadId(userKey) {
+    return `founder__${_normChatKey(userKey)}`;
+}
+
+function _extractFounderThreadUser(threadId) {
+    const s = String(threadId || "");
+    if (s.startsWith("founder__")) return _normChatKey(s.slice(9));
+    return _normChatKey(s);
+}
+
+function setMasterChatBoxTab(tab) {
+    _masterChatBoxTab = (tab === "cs") ? "cs" : "private";
+    renderFullChatOverlay();
+}
+
 function getChatThreads() {
     const curU = getCurrentUserObj();
-    const isStaff = isStaffUserObj(curU);
+    const isMaster = !!(curU && curU.role === "master");
+    const isAdminOnly = !!(curU && curU.role === "administrasi");
 
-    if (isStaff) {
-        const isAdministrasiOnly = curU && curU.role === "administrasi";
+    // 1. MASTER ADMIN: Terpisah jelas antara Chat Privat Founder vs Pantau CS Tim Admin
+    if (isMaster) {
         const map = {};
+        const wantPrivate = _masterChatBoxTab !== "cs";
+
         (db.chats || []).forEach(c => {
             const rawThread = String(c.threadUser || c.sender || "tamu");
             if (rawThread.startsWith("dm_")) return;
+            const isFounderThread = rawThread.startsWith("founder__");
+            const cleanOwnerKey = isFounderThread ? _extractFounderThreadUser(rawThread) : _normChatKey(rawThread);
+            const u = (db.users || []).find(x => _normChatKey(x.username) === cleanOwnerKey);
+            const role = (u && u.role) || (cleanOwnerKey.startsWith("tamu_") ? "tamu" : "user");
+
+            // Thread cabang, thread ber-prefix founder__, atau pesan khusus master masuk ke Privat Founder
+            const belongsToPrivate = isFounderThread || role === "cabang" || c.channel === "founder_private";
+            if (wantPrivate && !belongsToPrivate) return;
+            if (!wantPrivate && belongsToPrivate) return;
+
+            const mapKey = isFounderThread ? rawThread : cleanOwnerKey;
+            if (!map[mapKey]) {
+                map[mapKey] = {
+                    threadUser: mapKey,
+                    contactUsername: cleanOwnerKey,
+                    displayName: (u && u.name) || c.senderName || cleanOwnerKey,
+                    avatar: (u && u.avatar) || DEFAULT_AVATAR,
+                    role,
+                    isPrivateFounder: belongsToPrivate,
+                    isPro: !!(u && u.isPro),
+                    messages: [],
+                    unread: 0,
+                    lastTs: 0
+                };
+            }
+            map[mapKey].messages.push(c);
+            const isFromStaff = c.role === "master" || c.role === "administrasi";
+            if (!c.readByMaster && !isFromStaff) map[mapKey].unread++;
+            if ((c.ts || 0) >= map[mapKey].lastTs) map[mapKey].lastTs = c.ts || 0;
+        });
+        return Object.values(map).sort((a, b) => b.lastTs - a.lastTs);
+    }
+
+    // 2. TIM ADMINISTRASI (SHARED CS DESK): Semua admin 1, 2, dst melihat isi chat CS SAMA PERSIS untuk overshift,
+    //    tapi TIDAK BISA melihat chat privat Founder (founder__* / cabang / master)!
+    if (isAdminOnly) {
+        const map = {};
+        (db.chats || []).forEach(c => {
+            const rawThread = String(c.threadUser || c.sender || "tamu");
+            if (rawThread.startsWith("dm_") || rawThread.startsWith("founder__") || c.channel === "founder_private") return;
             const key = _normChatKey(rawThread);
             const u = (db.users || []).find(x => _normChatKey(x.username) === key);
             const role = (u && u.role) || (key.startsWith("tamu_") ? "tamu" : "user");
-            if (isAdministrasiOnly && (role === "cabang" || role === "master")) return;
+            if (role === "cabang" || role === "master") return;
 
             if (!map[key]) {
                 map[key] = {
@@ -119,14 +189,16 @@ function getChatThreads() {
         return Object.values(map).sort((a, b) => b.lastTs - a.lastTs);
     }
 
-    // Untuk User Biasa, Admin Cabang & Tamu: tampilkan daftar percakapan rapi di halaman chat luar
+    // 3. USER BIASA / ADMIN CABANG: Melihat thread CS Tim Administrasi, thread Privat Founder, dan DM teman yang diikuti
     const myKey = _normChatKey(currentSessionUser || guestChatId);
+    const myFounderThread = _buildFounderPrivateThreadId(myKey);
     const map = {};
 
     (db.chats || []).forEach(c => {
         const rawThread = String(c.threadUser || "");
         let threadKey = "";
         let contactUname = "";
+        let isFounderDirect = false;
 
         if (rawThread.startsWith("dm_")) {
             const parts = rawThread.slice(3).split("__");
@@ -134,10 +206,14 @@ function getChatThreads() {
             const other = parts[0] === myKey ? parts[1] : parts[0];
             threadKey = rawThread;
             contactUname = other;
+        } else if (rawThread === myFounderThread || (curU && curU.role === "cabang" && _normChatKey(rawThread || c.sender) === myKey)) {
+            threadKey = myFounderThread;
+            contactUname = _normChatKey(FOUNDER_USERNAME);
+            isFounderDirect = true;
         } else {
             if (_normChatKey(rawThread || c.sender) !== myKey) return;
             threadKey = "admin_support";
-            contactUname = _normChatKey(FOUNDER_USERNAME);
+            contactUname = "admin_support";
         }
 
         if (!map[threadKey]) {
@@ -146,9 +222,17 @@ function getChatThreads() {
             map[threadKey] = {
                 threadUser: threadKey,
                 contactUsername: contactUname,
-                displayName: isSupport ? "Admin & Founder Lembarku" : ((targetObj && targetObj.name) || contactUname),
-                avatar: isSupport ? "./lembarku-logo.png" : ((targetObj && targetObj.avatar) || DEFAULT_AVATAR),
-                role: isSupport ? "master" : ((targetObj && targetObj.role) || "user"),
+                displayName: isFounderDirect
+                    ? "Founder Lembarku (Privat)"
+                    : isSupport
+                        ? "Tim Administrasi (CS)"
+                        : ((targetObj && targetObj.name) || contactUname),
+                avatar: isFounderDirect
+                    ? ((targetObj && targetObj.avatar) || "./lembarku-logo.png")
+                    : isSupport
+                        ? "./lembarku-logo.png"
+                        : ((targetObj && targetObj.avatar) || DEFAULT_AVATAR),
+                role: isFounderDirect ? "master" : isSupport ? "administrasi" : ((targetObj && targetObj.role) || "user"),
                 isPro: !!(targetObj && targetObj.isPro),
                 messages: [],
                 unread: 0,
@@ -160,21 +244,6 @@ function getChatThreads() {
         if (!isFromMe && !c.readByUser) map[threadKey].unread++;
         if ((c.ts || 0) >= map[threadKey].lastTs) map[threadKey].lastTs = c.ts || 0;
     });
-
-    // Jika tamu belum login dan belum punya riwayat chat, tetap tampilkan 1 pintasan Admin agar bisa klik masuk
-    if (!curU && !map["admin_support"]) {
-        map["admin_support"] = {
-            threadUser: "admin_support",
-            contactUsername: _normChatKey(FOUNDER_USERNAME),
-            displayName: "Admin Lembarku",
-            avatar: "./lembarku-logo.png",
-            role: "master",
-            isPro: true,
-            messages: [],
-            unread: 0,
-            lastTs: 0
-        };
-    }
 
     return Object.values(map).sort((a, b) => b.lastTs - a.lastTs);
 }
@@ -239,8 +308,8 @@ function openChatContactsModal() {
     const sub = document.getElementById("cc-access-sub");
     if (sub) {
         sub.innerText = curU.role === "master"
-            ? "Seluruh pengguna terdaftar (User, PRO, Cabang & Administrasi)"
-            : "Founder, Tim Administrasi & akun yang Anda ikuti";
+            ? "Seluruh pengguna terdaftar (chat masuk ke kotak Privat Founder)"
+            : "Founder (Privat), Tim Administrasi (CS) & akun yang Anda ikuti";
     }
     const inp = document.getElementById("cc-search-inp");
     if (inp) inp.value = "";
@@ -302,9 +371,9 @@ function renderChatContactsModalList() {
         const onlineDot = typeof buildOnlineDotHtml === "function" ? buildOnlineDotHtml(u, "md") : "";
         const presenceTxt = typeof getUserPresenceText === "function" ? getUserPresenceText(u) : "";
         const roleBadge = u.role === "master"
-            ? `<span class="text-[9px] px-1.5 py-0.5 rounded-full bg-amber-500/20 text-amber-600 font-extrabold">FOUNDER</span>`
+            ? `<span class="text-[9px] px-1.5 py-0.5 rounded-full bg-amber-500/20 text-amber-600 font-extrabold">FOUNDER • PRIVAT</span>`
             : u.role === "administrasi"
-                ? `<span class="text-[9px] px-1.5 py-0.5 rounded-full bg-emerald-500/20 text-emerald-600 font-extrabold">ADMIN</span>`
+                ? `<span class="text-[9px] px-1.5 py-0.5 rounded-full bg-emerald-500/20 text-emerald-600 font-extrabold">ADMIN CS</span>`
                 : u.role === "cabang"
                     ? `<span class="text-[9px] px-1.5 py-0.5 rounded-full bg-blue-500/20 text-blue-600 font-extrabold">CABANG</span>`
                     : (isMaster ? `<span class="text-[9px] px-1.5 py-0.5 rounded-full bg-zinc-500/15 app-muted font-bold">USER</span>` : `<span class="text-[9px] px-1.5 py-0.5 rounded-full bg-zinc-500/15 app-muted font-bold">FOLLOWING</span>`);
@@ -360,20 +429,26 @@ function startDirectChatWithContact(username) {
     document.getElementById("modal-chat-contacts")?.classList.add("hide");
     if (typeof _mrDropTopModalById === "function") _mrDropTopModalById("modal-chat-contacts");
 
-    if (curU && !isStaffUserObj(curU)) {
-        const threadId = _isStaffUserOrKey(targetObj || cleanTarget)
-            ? "admin_support"
-            : _buildPeerDmThreadId(curU.username, cleanTarget);
-        openFullChatOverlay(threadId);
-    } else {
+    if (curU && curU.role === "master") {
+        _masterChatBoxTab = "private";
+        openFullChatOverlay(_buildFounderPrivateThreadId(cleanTarget));
+    } else if (curU && curU.role === "administrasi") {
         openFullChatOverlay(cleanTarget);
+    } else if (curU) {
+        if (_isFounderKey(targetObj || cleanTarget)) {
+            openFullChatOverlay(_buildFounderPrivateThreadId(curU.username));
+        } else if (_isAdminStaffKey(targetObj || cleanTarget)) {
+            openFullChatOverlay("admin_support");
+        } else {
+            openFullChatOverlay(_buildPeerDmThreadId(curU.username, cleanTarget));
+        }
     }
 }
 
-async function deleteChatThreadHistory(targetUser) {
+async function deleteChatThreadHistory(targetThread) {
     const curU = getCurrentUserObj();
     if (!curU || curU.role !== "master") return showToast("Hanya Founder yang dapat menghapus riwayat chat.", "error");
-    const tUser = _normChatKey(targetUser || activeMasterChatThread || "");
+    const tUser = String(targetThread || activeMasterChatThread || "");
     if (!tUser) return;
     if (!(await showConfirm("Hapus Riwayat Chat", `Hapus seluruh riwayat pesan ini secara permanen?`, "fa-solid fa-trash", "Ya, Hapus Riwayat"))) return;
 
@@ -381,7 +456,7 @@ async function deleteChatThreadHistory(targetUser) {
     const res = await apiAction({ action: "delete_chat_thread", threadUser: tUser });
     hideLoading();
     if (res && res.ok) {
-        db.chats = (db.chats || []).filter(c => _normChatKey(c.threadUser || c.sender || "") !== tUser);
+        db.chats = (db.chats || []).filter(c => String(c.threadUser || c.sender || "") !== tUser);
         if (activeMasterChatThread === tUser) activeMasterChatThread = null;
         renderFullChatOverlay();
         updateChatBadges();
@@ -424,9 +499,9 @@ function _renderUserProfileModalFallback(uObj) {
 }
 
 function _openUserProfileFromChat(threadUser) {
-    const cleanUser = _normChatKey(threadUser);
+    const cleanUser = _extractFounderThreadUser(threadUser);
     if (!cleanUser || cleanUser.startsWith("tamu_") || cleanUser === "admin_support") {
-        showToast("Layanan resmi Lembarku.", "info");
+        showToast("Layanan CS resmi Tim Administrasi Lembarku.", "info");
         return;
     }
 
@@ -452,7 +527,7 @@ function exitChatThreadToList() {
     renderFullChatOverlay();
 }
 
-function _syncWaChatHeader(mode = "list", title = "", avatarUrl = "", profileUsername = "") {
+function _syncWaChatHeader(mode = "list", title = "", avatarUrl = "", profileUsername = "", customSub = "") {
     const ov = document.getElementById("full-chat-overlay");
     if (!ov) return;
 
@@ -471,13 +546,13 @@ function _syncWaChatHeader(mode = "list", title = "", avatarUrl = "", profileUse
         const targetProfileObj = isRealUser ? (db.users || []).find(x => _normChatKey(x.username) === _normChatKey(profileUsername)) : null;
         const headerOnlineDot = targetProfileObj && typeof buildOnlineDotHtml === "function" ? buildOnlineDotHtml(targetProfileObj, "sm") : "";
         const headerPresence = targetProfileObj && typeof getUserPresenceText === "function" ? getUserPresenceText(targetProfileObj) : "";
-        const headerSubLine = isRealUser
+        const headerSubLine = customSub || (isRealUser
             ? (headerPresence === "Online"
                 ? `<span class="text-emerald-300 font-bold">● Online</span> • Ketuk lihat profil`
                 : headerPresence
                     ? `${escHtml(headerPresence)} • Ketuk lihat profil`
                     : "Ketuk untuk lihat profil")
-            : "Layanan Resmi Lembarku";
+            : "Layanan Resmi Tim Administrasi");
         const clickCall = isRealUser ? `onclick="_openUserProfileFromChat('${esc(profileUsername)}'); event.stopPropagation();"` : "";
         const backAction = mode === "thread" ? "exitChatThreadToList()" : "closeFullChatOverlay()";
 
@@ -498,8 +573,8 @@ function _syncWaChatHeader(mode = "list", title = "", avatarUrl = "", profileUse
                            </div>`
                         : `<img src="./lembarku-logo.png" class="w-9 h-9 rounded-xl bg-white p-1 object-contain border border-black/10 shrink-0">
                            <div class="min-w-0 flex-1">
-                               <h3 class="text-lg font-extrabold text-white tracking-tight">Obrolan</h3>
-                               <span class="text-[10px] text-white/80 block -mt-0.5">Pilih obrolan atau ketuk + untuk mulai chat</span>
+                               <h3 class="text-lg font-extrabold text-white tracking-tight">${escHtml(title || "Obrolan")}</h3>
+                               <span class="text-[10px] text-white/80 block -mt-0.5">${escHtml(customSub || "Pilih obrolan atau ketuk + untuk mulai chat")}</span>
                            </div>`
                     }
                 </div>
@@ -533,14 +608,30 @@ async function openFullChatOverlay(targetThread = null, skipHistoryPush = false)
         window._chatOriginView = currentViewName;
     }
 
-    const u = getCurrentUserObj();
+    const u = curUserCheck;
     if (targetThread) {
         const rawT = String(targetThread).trim();
-        if (u && !isStaffUserObj(u) && !rawT.startsWith("dm_") && rawT !== "admin_support") {
-            const cleanT = _normChatKey(rawT);
-            activeMasterChatThread = _isStaffUserOrKey(cleanT) ? "admin_support" : _buildPeerDmThreadId(u.username, cleanT);
+        if (u.role === "master") {
+            if (rawT.startsWith("founder__") || rawT.startsWith("dm_")) {
+                activeMasterChatThread = rawT;
+            } else {
+                activeMasterChatThread = _masterChatBoxTab === "cs" ? _normChatKey(rawT) : _buildFounderPrivateThreadId(rawT);
+            }
+        } else if (u.role === "administrasi") {
+            if (rawT.startsWith("founder__")) {
+                return showToast("Percakapan ini bersifat privat milik Founder.", "error");
+            }
+            activeMasterChatThread = _normChatKey(rawT);
         } else {
-            activeMasterChatThread = rawT.startsWith("dm_") || rawT === "admin_support" ? rawT : _normChatKey(rawT);
+            if (rawT === "founder_private" || _isFounderKey(rawT)) {
+                activeMasterChatThread = _buildFounderPrivateThreadId(u.username);
+            } else if (rawT === "admin_support" || _isAdminStaffKey(rawT)) {
+                activeMasterChatThread = u.role === "cabang" ? _buildFounderPrivateThreadId(u.username) : "admin_support";
+            } else if (rawT.startsWith("dm_") || rawT.startsWith("founder__")) {
+                activeMasterChatThread = rawT;
+            } else {
+                activeMasterChatThread = _buildPeerDmThreadId(u.username, rawT);
+            }
         }
     } else if (ov.classList.contains("hide")) {
         activeMasterChatThread = null;
@@ -634,28 +725,53 @@ function renderFullChatOverlay() {
     const u = getCurrentUserObj();
     const isStaff = isStaffUserObj(u);
     const isMaster = !!(u && u.role === "master");
+    const isAdminOnly = !!(u && u.role === "administrasi");
     const threads = getChatThreads();
 
     // 1. HALAMAN UTAMA CHAT LUAR (TANPA KOLOM MENGETIK, TAMPIL TOMBOL +)
     if (!activeMasterChatThread) {
-        _syncWaChatHeader("list", "Obrolan");
+        const hdrTitle = isMaster ? "Obrolan Founder" : isAdminOnly ? "CS Tim Administrasi" : "Obrolan";
+        const hdrSub = isMaster
+            ? (_masterChatBoxTab === "cs" ? "Pantau CS bersama Tim Administrasi" : "Kotak masuk privat khusus Founder")
+            : isAdminOnly
+                ? "Kotak masuk bersama seluruh staf (Sinkron Overshift)"
+                : "Pilih obrolan atau ketuk + untuk mulai chat";
+        _syncWaChatHeader("list", hdrTitle, "", "", hdrSub);
         const plusHtml = u ? _buildPlusContactButtonHtml() : "";
 
+        const masterTabsBar = isMaster ? `
+            <div class="px-3.5 py-2.5 app-card border-b gold-border flex gap-2 shrink-0">
+                <button type="button" onclick="setMasterChatBoxTab('private')" class="flex-1 py-2 rounded-xl text-xs font-extrabold transition ${_masterChatBoxTab !== "cs" ? "gold-pill-btn shadow-sm" : "app-btn-sec"}">
+                    <i class="fa-solid fa-lock mr-1"></i>Chat Privat Founder
+                </button>
+                <button type="button" onclick="setMasterChatBoxTab('cs')" class="flex-1 py-2 rounded-xl text-xs font-extrabold transition ${_masterChatBoxTab === "cs" ? "gold-pill-btn shadow-sm" : "app-btn-sec"}">
+                    <i class="fa-solid fa-headset mr-1"></i>CS Tim Admin
+                </button>
+            </div>
+        ` : (isAdminOnly ? `
+            <div class="px-3.5 py-2 bg-emerald-500/10 border-b border-emerald-500/25 text-[10.5px] text-emerald-700 font-semibold shrink-0 flex items-center gap-2">
+                <i class="fa-solid fa-users-gear"></i>
+                <span>Mode Overshift Aktif: Semua staf Administrasi melihat riwayat chat CS yang sama.</span>
+            </div>
+        ` : "");
+
         body.innerHTML = `
+            ${masterTabsBar}
             <div class="flex-1 overflow-y-auto divide-y divide-black/10 pb-24">${threads.length ? threads.map(th => {
                 const last = th.messages.length ? th.messages[th.messages.length - 1] : null;
                 const lastStaff = last && (last.role === "master" || last.role === "administrasi");
                 const roleBadge = th.role === "master"
                     ? `<span class="text-[9px] px-1.5 py-0.5 rounded bg-amber-500/20 text-amber-600 font-bold">FOUNDER</span>`
                     : th.role === "administrasi"
-                        ? `<span class="text-[9px] px-1.5 py-0.5 rounded bg-emerald-500/20 text-emerald-600 font-bold">ADMIN</span>`
+                        ? `<span class="text-[9px] px-1.5 py-0.5 rounded bg-emerald-500/20 text-emerald-600 font-bold">TIM CS</span>`
                         : th.role === "cabang"
                             ? `<span class="text-[9px] px-1.5 py-0.5 rounded bg-blue-500/15 text-blue-600 font-bold">CABANG</span>`
                             : th.role === "tamu"
                                 ? `<span class="text-[9px] px-1.5 py-0.5 rounded bg-zinc-500/15 app-muted font-bold">TAMU</span>`
                                 : "";
+                const lastSenderPrefix = (isStaff && lastStaff) ? `✓✓ ${escHtml(last.senderName || "Admin")}: ` : "";
                 const previewText = last
-                    ? `${isStaff && lastStaff ? "✓✓ Admin: " : ""}${last.image ? "📷 [Lampiran] " : ""}${escHtml(last.text)}`
+                    ? `${lastSenderPrefix}${last.image ? "📷 [Lampiran] " : ""}${escHtml(last.text)}`
                     : "Ketuk untuk mulai berkirim pesan";
 
                 const thUserObj = (db.users || []).find(x => _normChatKey(x.username) === _normChatKey(th.contactUsername || th.threadUser));
@@ -679,7 +795,7 @@ function renderFullChatOverlay() {
                         </div>
                     </div>
                 </div>`;
-            }).join("") : '<div class="p-12 text-center space-y-2"><i class="fa-regular fa-comments text-3xl app-muted opacity-50"></i><p class="text-xs app-muted">Belum ada percakapan.<br>Ketuk tombol <strong>+</strong> di kanan bawah untuk memilih kontak.</p></div>'}</div>
+            }).join("") : '<div class="p-12 text-center space-y-2"><i class="fa-regular fa-comments text-3xl app-muted opacity-50"></i><p class="text-xs app-muted">Belum ada percakapan di kotak ini.<br>Ketuk tombol <strong>+</strong> di kanan bawah untuk memilih kontak.</p></div>'}</div>
             ${plusHtml}
         `;
         return;
@@ -687,14 +803,16 @@ function renderFullChatOverlay() {
 
     // 2. HALAMAN ISI CHAT DENGAN SESEORANG (ADA KOLOM MENGETIK, TANPA TOMBOL +)
     if (isStaff) {
-        const uObj = (db.users || []).find(x => _normChatKey(x.username) === activeMasterChatThread);
+        const contactKey = _extractFounderThreadUser(activeMasterChatThread);
+        const uObj = (db.users || []).find(x => _normChatKey(x.username) === contactKey);
         const th = threads.find(t => t.threadUser === activeMasterChatThread) || {
             threadUser: activeMasterChatThread,
-            contactUsername: activeMasterChatThread,
-            displayName: (uObj && uObj.name) || activeMasterChatThread,
+            contactUsername: contactKey,
+            displayName: (uObj && uObj.name) || contactKey,
             avatar: (uObj && uObj.avatar) || DEFAULT_AVATAR
         };
-        _syncWaChatHeader("thread", th.displayName, th.avatar, th.contactUsername || th.threadUser);
+        const privTag = String(activeMasterChatThread).startsWith("founder__") ? "🔒 Privat Founder • " : "";
+        _syncWaChatHeader("thread", th.displayName, th.avatar, th.contactUsername || contactKey, privTag ? `${privTag}Ketuk lihat profil` : "");
         const quickBar = `<div class="px-3 py-1.5 app-card border-t gold-border flex gap-1.5 overflow-x-auto no-scrollbar shrink-0">${QUICK_REPLIES_STAFF.map(txt => `<button type="button" onclick="fillQuickReply('${esc(txt)}')" class="px-2.5 py-1 rounded-full app-card-soft border text-[10px] font-semibold whitespace-nowrap hover:brightness-95">${escHtml(txt.slice(0, 34))}...</button>`).join("")}</div>`;
 
         body.innerHTML = `
@@ -704,12 +822,20 @@ function renderFullChatOverlay() {
         `;
         renderFullChatMessagesOnly();
     } else {
-        const isSupport = activeMasterChatThread === "admin_support" || _isStaffUserOrKey(activeMasterChatThread);
-        let targetName = "Admin & Founder Lembarku";
+        const isFounderDirect = String(activeMasterChatThread).startsWith("founder__");
+        const isSupport = activeMasterChatThread === "admin_support";
+        let targetName = "Tim Administrasi (CS)";
         let targetAv = "./lembarku-logo.png";
         let profileUname = "";
+        let customSub = "Layanan CS Bersama Tim Administrasi";
 
-        if (!isSupport && String(activeMasterChatThread).startsWith("dm_")) {
+        if (isFounderDirect) {
+            const fObj = (db.users || []).find(x => x.role === "master");
+            targetName = (fObj && fObj.name) ? `${fObj.name} (Founder)` : "Founder Lembarku";
+            targetAv = (fObj && fObj.avatar) || "./lembarku-logo.png";
+            profileUname = (fObj && fObj.username) || FOUNDER_USERNAME;
+            customSub = "🔒 Obrolan Privat dengan Founder";
+        } else if (!isSupport && String(activeMasterChatThread).startsWith("dm_")) {
             const myKey = _normChatKey(currentSessionUser || guestChatId);
             const parts = String(activeMasterChatThread).slice(3).split("__");
             const peerKey = parts[0] === myKey ? parts[1] : parts[0];
@@ -717,16 +843,18 @@ function renderFullChatOverlay() {
             targetName = (peerObj && peerObj.name) || peerKey || "Pengguna";
             targetAv = (peerObj && peerObj.avatar) || DEFAULT_AVATAR;
             profileUname = peerKey || "";
+            customSub = "";
         }
 
-        _syncWaChatHeader("thread", targetName, targetAv, profileUname);
+        _syncWaChatHeader("thread", targetName, targetAv, profileUname, customSub);
         body.innerHTML = `
             <div id="fchat-messages-scroll" class="flex-1 overflow-y-auto p-3.5 space-y-2.5"></div>
             ${buildChatComposerHtml("sendUserChatMessage(event)", "chat-input-text", "btn-chat-send", `Ketik pesan ke ${esc(targetName)}...`)}
         `;
         renderFullChatMessagesOnly();
-        if (isSupport) {
-            apiAction({ action: "mark_chat_read", threadUser: _normChatKey(currentSessionUser || guestChatId), by: "user" }).then(updateChatBadges);
+        if (isSupport || isFounderDirect) {
+            const markTarget = isFounderDirect ? String(activeMasterChatThread) : _normChatKey(currentSessionUser || guestChatId);
+            apiAction({ action: "mark_chat_read", threadUser: markTarget, by: "user" }).then(updateChatBadges);
         }
     }
 }
@@ -743,11 +871,24 @@ function renderFullChatMessagesOnly() {
 
     let msgs = [];
     if (isStaff) {
-        msgs = (db.chats || []).filter(c => _normChatKey(c.threadUser || c.sender) === activeMasterChatThread);
-    } else if (activeMasterChatThread && String(activeMasterChatThread).startsWith("dm_")) {
-        msgs = (db.chats || []).filter(c => String(c.threadUser || "") === String(activeMasterChatThread));
+        const curTh = String(activeMasterChatThread || "");
+        if (curTh.startsWith("founder__")) {
+            const innerU = _extractFounderThreadUser(curTh);
+            const innerObj = (db.users || []).find(x => _normChatKey(x.username) === innerU);
+            const isCab = !!(innerObj && innerObj.role === "cabang");
+            msgs = (db.chats || []).filter(c => {
+                const ct = String(c.threadUser || "");
+                return ct === curTh || (isCab && _normChatKey(ct || c.sender) === innerU);
+            });
+        } else {
+            msgs = (db.chats || []).filter(c => !String(c.threadUser || "").startsWith("founder__") && _normChatKey(c.threadUser || c.sender) === _normChatKey(curTh));
+        }
+    } else if (activeMasterChatThread && (String(activeMasterChatThread).startsWith("dm_") || String(activeMasterChatThread).startsWith("founder__"))) {
+        const curTh = String(activeMasterChatThread);
+        const isCabSelf = !!(u && u.role === "cabang" && curTh.startsWith("founder__"));
+        msgs = (db.chats || []).filter(c => String(c.threadUser || "") === curTh || (isCabSelf && !String(c.threadUser || "").startsWith("dm_") && _normChatKey(c.threadUser || c.sender) === myKey));
     } else {
-        msgs = (db.chats || []).filter(c => !String(c.threadUser || "").startsWith("dm_") && _normChatKey(c.threadUser || c.sender) === myKey);
+        msgs = (db.chats || []).filter(c => !String(c.threadUser || "").startsWith("dm_") && !String(c.threadUser || "").startsWith("founder__") && _normChatKey(c.threadUser || c.sender) === myKey);
     }
 
     let lastStaffReplyTs = 0;
@@ -775,7 +916,11 @@ function renderFullChatMessagesOnly() {
         }
 
         const bubbleCls = isMe ? "app-card border-2 gold-border rounded-br-sm" : "app-card border rounded-bl-sm";
-        const senderLbl = isMe ? "Anda" : (m.role === "master" ? "Founder" : m.role === "administrasi" ? "Tim Administrasi" : (m.senderName || "Pengguna"));
+        const senderLbl = (isMe && isStaff && m.senderName)
+            ? m.senderName
+            : isMe
+                ? "Anda"
+                : (m.role === "master" ? "Founder" : m.role === "administrasi" ? (m.senderName || "Tim Administrasi") : (m.senderName || "Pengguna"));
 
         return `<div class="flex ${isMe ? "justify-end" : "justify-start"}">
             <div class="max-w-[84%] px-3.5 py-2.5 rounded-2xl text-xs leading-relaxed shadow-sm ${bubbleCls}">
@@ -799,15 +944,16 @@ function renderFullChatContentSmart() {
 
 async function openMasterChatThread(tUser) {
     const raw = String(tUser || "");
-    const clean = (raw.startsWith("dm_") || raw === "admin_support") ? raw : _normChatKey(raw);
+    const clean = (raw.startsWith("dm_") || raw.startsWith("founder__") || raw === "admin_support") ? raw : _normChatKey(raw);
     activeMasterChatThread = clean;
     _pushChatNavStep({ type: "chat_thread", threadUser: clean });
     renderFullChatOverlay();
     const u = getCurrentUserObj();
     if (isStaffUserObj(u)) {
         await apiAction({ action: "mark_chat_read", threadUser: clean, by: (u && u.role) || "master" });
-    } else if (clean === "admin_support") {
-        await apiAction({ action: "mark_chat_read", threadUser: _normChatKey(currentSessionUser || guestChatId), by: "user" });
+    } else if (clean === "admin_support" || clean.startsWith("founder__")) {
+        const markKey = clean.startsWith("founder__") ? clean : _normChatKey(currentSessionUser || guestChatId);
+        await apiAction({ action: "mark_chat_read", threadUser: markKey, by: "user" });
     }
     updateChatBadges();
 }
@@ -819,12 +965,14 @@ async function sendMasterThreadReply(e) {
     const image = tempChatAttachment || "";
     if (!text && !image) return;
     const u = getCurrentUserObj();
+    const isFounderPriv = String(activeMasterChatThread || "").startsWith("founder__");
     const cid = "cm_" + Date.now() + "_" + Math.random().toString(36).slice(2, 6);
     const localMsg = {
         clientMsgId: cid,
         threadUser: activeMasterChatThread,
+        channel: isFounderPriv ? "founder_private" : "cs_desk",
         sender: _normChatKey((u && u.username) || FOUNDER_USERNAME),
-        senderName: u && u.role === "administrasi" ? `Admin (${u.name})` : "Founder",
+        senderName: u && u.role === "administrasi" ? `Admin (${u.name || u.username})` : "Founder",
         role: (u && u.role) || "master",
         text,
         image,
@@ -857,13 +1005,16 @@ async function sendUserChatMessage(e) {
     if (!text && !image) return;
     const u = getCurrentUserObj();
     const myKey = _normChatKey(currentSessionUser || guestChatId);
-    const isDmPeer = activeMasterChatThread && String(activeMasterChatThread).startsWith("dm_");
-    const targetThreadUser = isDmPeer ? String(activeMasterChatThread) : myKey;
+    const curTh = String(activeMasterChatThread || "");
+    const isDmPeer = curTh.startsWith("dm_");
+    const isFounderPriv = curTh.startsWith("founder__") || (u && u.role === "cabang");
+    const targetThreadUser = isDmPeer ? curTh : isFounderPriv ? _buildFounderPrivateThreadId(myKey) : myKey;
 
     const cid = "cm_" + Date.now() + "_" + Math.random().toString(36).slice(2, 6);
     const localMsg = {
         clientMsgId: cid,
         threadUser: targetThreadUser,
+        channel: isFounderPriv ? "founder_private" : isDmPeer ? "peer_dm" : "cs_desk",
         sender: myKey,
         senderName: (u && u.name) || "Pengunjung",
         role: (u && u.role) || "user",
@@ -900,18 +1051,25 @@ function updateChatBadges() {
     if (isStaffUserObj(u)) {
         const isAdministrasiOnly = u.role === "administrasi";
         count = (db.chats || []).filter(c => {
-            if (String(c.threadUser || "").startsWith("dm_")) return false;
+            const rawTh = String(c.threadUser || "");
+            if (rawTh.startsWith("dm_")) return false;
             if (c.readByMaster || c.role === "master" || c.role === "administrasi") return false;
             if (isAdministrasiOnly) {
-                const key = _normChatKey(c.threadUser || c.sender || "");
+                if (rawTh.startsWith("founder__") || c.channel === "founder_private") return false;
+                const key = _normChatKey(rawTh || c.sender || "");
                 const owner = (db.users || []).find(x => _normChatKey(x.username) === key);
                 if (owner && (owner.role === "cabang" || owner.role === "master")) return false;
             }
             return true;
         }).length;
-    } else {
+    } else if (u) {
         const myKey = _normChatKey(currentSessionUser || guestChatId);
-        count = (db.chats || []).filter(c => _normChatKey(c.threadUser) === myKey && !c.readByUser && (c.role === "master" || c.role === "administrasi")).length;
+        const myFounderTh = _buildFounderPrivateThreadId(myKey);
+        count = (db.chats || []).filter(c => {
+            const rawTh = String(c.threadUser || "");
+            const isMine = rawTh === myFounderTh || _normChatKey(rawTh) === myKey;
+            return isMine && !c.readByUser && (c.role === "master" || c.role === "administrasi");
+        }).length;
     }
 
     if (_lastKnownChatCount >= 0 && count > _lastKnownChatCount) {

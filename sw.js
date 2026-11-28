@@ -1,7 +1,7 @@
 // =========================================================================
-// LEMBARKU & TITIK GOWES — SERVICE WORKER PWA ENGINE (sw.js — V14.9)
+// LEMBARKU & TITIK GOWES — SERVICE WORKER PWA ENGINE (sw.js — V14.10)
 // =========================================================================
-const CACHE_NAME = "lembarku-cache-v13";
+const CACHE_NAME = "lembarku-cache-v14";
 const ASSETS_TO_CACHE = [
     "./",
     "./index.html",

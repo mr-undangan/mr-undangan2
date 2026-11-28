@@ -1,6 +1,6 @@
 // =========================================================================
 // TITIK GOWES — FRONTEND RENTAL, MULTI-CABANG, ANTI-BENTROK & KASIR OFFLINE
-// File: js/gowes.js (V14.8)
+// File: js/gowes.js (V14.10)
 // =========================================================================
 
 let activeBookingBike = null;
@@ -1517,8 +1517,10 @@ async function submitGowesOfflineBooking(e) {
     }
 
     setBtnLoading("btn-submit-gw-pos", true, "Memproses Kasir...");
+    const hbMeta = typeof buildHandledByMeta === "function" ? buildHandledByMeta() : null;
     const res = await apiAction({
         action: "gowes_create_offline_booking",
+        handledBy: hbMeta,
         booking: {
             bikeId: firstBike.id,
             selectedBikes: selectedObjs.map(b => ({ bikeId: b.id, bikeName: b.name, bikeType: b.type || "", bikeImage: b.image || "" })),
@@ -1549,6 +1551,7 @@ async function submitGowesOfflineBooking(e) {
         db.gowesUpcomingBookings = res.upcomingBookings;
         db.gowesTodayBookings = res.upcomingBookings;
     }
+    if (hbMeta && !res.rental.handledBy) res.rental.handledBy = hbMeta;
     if (!Array.isArray(db.gowesRentals)) db.gowesRentals = [];
     db.gowesRentals.unshift(res.rental);
 
@@ -1616,7 +1619,8 @@ async function confirmGowesOfflineQrisPaid() {
     if (!activeOfflineQrisRental) return;
     const rentalId = activeOfflineQrisRental.id;
     setBtnLoading("btn-confirm-oq-paid", true, "Mengaktifkan...");
-    const res = await apiAction({ action: "gowes_confirm_offline_qris", rentalId });
+    const hbMeta = typeof buildHandledByMeta === "function" ? buildHandledByMeta() : null;
+    const res = await apiAction({ action: "gowes_confirm_offline_qris", rentalId, handledBy: hbMeta });
     setBtnLoading("btn-confirm-oq-paid", false);
 
     if (!res || !res.ok || !res.rental) {
@@ -1627,6 +1631,7 @@ async function confirmGowesOfflineQrisPaid() {
         db.gowesUpcomingBookings = res.upcomingBookings;
         db.gowesTodayBookings = res.upcomingBookings;
     }
+    if (hbMeta && !res.rental.handledBy) res.rental.handledBy = hbMeta;
     const idx = (db.gowesRentals || []).findIndex(r => String(r.id) === String(rentalId));
     if (idx >= 0) db.gowesRentals[idx] = res.rental;
 
@@ -1644,13 +1649,100 @@ async function confirmGowesOfflineQrisPaid() {
     openGowesReceiptModal(res.rental);
 }
 
-// ================= 10. STRUK DIGITAL & KIRIM WA PELANGGAN =================
+// ================= 10. STRUK DIGITAL UNIVERSAL (PRINT & KIRIM WA SEMUA TRANSAKSI) =================
+let activeUniversalReceipt = null;
+
 function _normalizeWaPhoneID(phone) {
     let digits = String(phone || "").replace(/\D/g, "");
     if (!digits) return "";
     if (digits.startsWith("0")) digits = "62" + digits.slice(1);
     else if (digits.startsWith("8")) digits = "62" + digits;
     return digits;
+}
+
+function _buildPrintableReceiptHtml(rec) {
+    const logoSrc = rec.brand === "gowes" ? "./titik-gowes-logo.png" : "./lembarku-logo.png";
+    const rowsHtml = (rec.rows || []).map(row => `
+        <div style="display:flex;justify-content:space-between;gap:8px;margin-bottom:4px;">
+            <span style="color:#52525b;">${escHtml(row.label)}</span>
+            <strong style="text-align:right;color:#111827;">${escHtml(row.value)}</strong>
+        </div>
+    `).join("");
+
+    const itemsHtml = (rec.items || []).map((it, idx) => `
+        <div style="margin-bottom:3px;">${idx + 1}. <strong>${escHtml(it)}</strong></div>
+    `).join("");
+
+    return `
+        <div style="max-width:76mm;margin:0 auto;color:#111827;font-family:'Plus Jakarta Sans',Arial,sans-serif;font-size:11px;line-height:1.45;">
+            <div style="text-align:center;border-bottom:1px dashed #9ca3af;padding-bottom:8px;margin-bottom:8px;">
+                <img src="${logoSrc}" alt="${escHtml(rec.brandName)}" style="width:42px;height:42px;object-fit:contain;margin:0 auto 4px auto;display:block;" onerror="this.style.display='none'">
+                <div style="font-weight:800;font-size:13px;letter-spacing:0.03em;">${escHtml(rec.brandName)}</div>
+                <div style="font-size:10px;color:#52525b;">${escHtml(rec.subHeader || "")}</div>
+                <div style="display:inline-block;margin-top:4px;padding:2px 8px;border:1px solid #111827;border-radius:999px;font-size:9px;font-weight:800;text-transform:uppercase;">${escHtml(rec.payBadge || "LUNAS")}</div>
+            </div>
+            <div style="border-bottom:1px dashed #9ca3af;padding-bottom:8px;margin-bottom:8px;">
+                ${rowsHtml}
+            </div>
+            ${itemsHtml ? `<div style="border-bottom:1px dashed #9ca3af;padding-bottom:8px;margin-bottom:8px;"><div style="font-size:9.5px;font-weight:800;text-transform:uppercase;color:#52525b;margin-bottom:4px;">${escHtml(rec.itemsHeader || "Rincian Pesanan")}</div>${itemsHtml}</div>` : ""}
+            <div style="display:flex;justify-content:space-between;align-items:center;font-size:13px;font-weight:800;padding:4px 0;">
+                <span>TOTAL BAYAR</span>
+                <span>${escHtml(rec.grandTotalLabel || fmtRp(rec.grandTotal || 0))}</span>
+            </div>
+            ${rec.footerNote ? `<div style="margin-top:8px;padding-top:6px;border-top:1px dashed #9ca3af;font-size:9.5px;color:#52525b;text-align:center;">${escHtml(rec.footerNote)}</div>` : ""}
+            <div style="margin-top:6px;text-align:center;font-size:9px;color:#71717a;">Terima kasih atas kepercayaan Anda • ${escHtml(new Date().toLocaleString("id-ID"))}</div>
+        </div>
+    `;
+}
+
+function openUniversalReceiptModal(rec) {
+    if (!rec) return;
+    activeUniversalReceipt = rec;
+    const isGowes = rec.brand === "gowes";
+    const logoSrc = isGowes ? "./titik-gowes-logo.png" : "./lembarku-logo.png";
+
+    const topBar = document.getElementById("gw-receipt-topbar");
+    const topTitle = document.getElementById("gw-receipt-topbar-title");
+    if (topBar) {
+        topBar.className = `px-5 py-3.5 ${isGowes ? "bg-emerald-600" : "gold-gradient"} text-white flex items-center justify-between shrink-0`;
+    }
+    if (topTitle) topTitle.innerText = isGowes ? "Struk Sewa Titik Gowes" : "Struk Transaksi Lembarku";
+
+    const rowsHtml = (rec.rows || []).map(row => `
+        <div class="flex justify-between gap-2">
+            <span class="app-muted shrink-0">${escHtml(row.label)}</span>
+            <strong class="text-right ${row.accentCls || ""}">${escHtml(row.value)}</strong>
+        </div>
+    `).join("");
+
+    const itemsHtml = (rec.items || []).map((it, idx) => `<div>${idx + 1}. <strong>${escHtml(it)}</strong></div>`).join("");
+
+    const body = document.getElementById("gw-receipt-body");
+    if (body) {
+        body.innerHTML = `
+            <div class="text-center border-b border-dashed gold-border pb-3 space-y-1">
+                <img src="${logoSrc}" alt="${escHtml(rec.brandName)}" class="w-12 h-12 rounded-2xl bg-white p-1.5 object-contain mx-auto border border-black/10 shadow-sm" onerror="this.src='./lembarku-logo.png'">
+                <strong class="text-sm font-extrabold block pt-0.5">${escHtml(rec.brandName)}</strong>
+                <span class="text-[10px] app-muted block">${escHtml(rec.subHeader || "")}</span>
+                <span class="inline-block mt-1 px-2.5 py-0.5 rounded-full ${isGowes ? "bg-emerald-500/15 text-emerald-700" : "app-accent-bg app-accent"} text-[9.5px] font-extrabold uppercase">${escHtml(rec.payBadge || "LUNAS")}</span>
+            </div>
+            <div class="space-y-1.5 border-b border-dashed gold-border pb-3">
+                ${rowsHtml}
+            </div>
+            ${itemsHtml ? `<div class="space-y-1 border-b border-dashed gold-border pb-3">
+                <span class="text-[10px] uppercase font-bold app-muted block">${escHtml(rec.itemsHeader || "Rincian Pesanan")}</span>
+                ${itemsHtml}
+            </div>` : ""}
+            <div class="flex items-center justify-between pt-0.5">
+                <span class="font-bold text-xs">Total Bayar</span>
+                <strong class="text-lg font-extrabold ${isGowes ? "text-emerald-600" : "app-accent"}">${escHtml(rec.grandTotalLabel || fmtRp(rec.grandTotal || 0))}</strong>
+            </div>
+            ${rec.footerNote ? `<p class="text-[10px] app-muted bg-amber-500/10 border border-amber-500/30 rounded-xl p-2.5 leading-relaxed">${escHtml(rec.footerNote)}</p>` : ""}
+        `;
+    }
+
+    document.getElementById("modal-gowes-receipt")?.classList.remove("hide");
+    if (typeof mrNavPush === "function") mrNavPush({ type: "modal", id: "modal-gowes-receipt" });
 }
 
 function openGowesReceiptModal(rentalOrId) {
@@ -1663,77 +1755,51 @@ function openGowesReceiptModal(rentalOrId) {
     const allBikes = Array.isArray(db.gowesBikes) && db.gowesBikes.length ? db.gowesBikes : DEFAULT_GOWES_BIKES;
     const refBike = allBikes.find(b => String(b.id) === String(r.bikeId)) || null;
     const iv = getBookingIntervalMinutes(r.startTime, r.durationKey, refBike, r.durationLabel);
-    const returnText = (r.durationKey === "full_day" && iv.durationHours === 0)
-        ? "20:00 WITA"
-        : `${iv.endColon} WITA${iv.nextDay ? " (Besok)" : ""}`;
+    const extraH = Number(r.extraHours || 0);
+    const endTotalMin = iv.endMin + extraH * 60;
+    const endH = Math.floor((endTotalMin % 1440) / 60);
+    const endM = endTotalMin % 60;
+    const endLabel = `${String(endH).padStart(2, "0")}:${String(endM).padStart(2, "0")} WITA${endTotalMin >= 1440 ? " (Besok)" : ""}`;
+    const returnText = (r.durationKey === "full_day" && iv.durationHours === 0 && extraH === 0) ? "20:00 WITA" : endLabel;
 
     const payBadge = r.isOffline
         ? (r.paymentMethod === "cash" ? "OFFLINE • CASH (LUNAS)" : "OFFLINE • QRIS")
         : "ONLINE • QRIS";
+    const lateFee = Math.max(0, Number(r.lateFee || 0));
+    const grandTotal = Number(r.totalPrice || 0) + lateFee;
+    const handlerText = (r.handledBy && r.handledBy.name)
+        ? `${r.handledBy.name} (@${r.handledBy.username})`
+        : (r.cashierName || "");
 
-    const unitLines = (Array.isArray(r.selectedBikes) && r.selectedBikes.length)
-        ? r.selectedBikes.map((sb, i) => `<div>${i + 1}. <strong>${escHtml(sb.bikeName)}</strong></div>`).join("")
-        : `<div>1. <strong>${escHtml(r.bikeName)}</strong></div>`;
+    const units = (Array.isArray(r.selectedBikes) && r.selectedBikes.length)
+        ? r.selectedBikes.map(sb => sb.bikeName)
+        : [r.bikeName || "Sepeda"];
 
-    const body = document.getElementById("gw-receipt-body");
-    if (body) {
-        body.innerHTML = `
-            <div class="text-center border-b border-dashed gold-border pb-3 space-y-0.5">
-                <strong class="text-sm font-extrabold block">TITIK GOWES RENTAL</strong>
-                <span class="text-[10px] app-muted block">${escHtml(r.pickupLocation || r.branchCity || "Shelter Resmi")}</span>
-                <span class="inline-block mt-1 px-2.5 py-0.5 rounded-full bg-emerald-500/15 text-emerald-700 text-[9.5px] font-extrabold uppercase">${escHtml(payBadge)}</span>
-            </div>
-            <div class="space-y-1.5 border-b border-dashed gold-border pb-3">
-                <div class="flex justify-between gap-2"><span class="app-muted">No. Nota</span><strong class="font-mono">${escHtml(r.id)}</strong></div>
-                <div class="flex justify-between gap-2"><span class="app-muted">Penyewa</span><strong>${escHtml(r.customerName || "-")}</strong></div>
-                <div class="flex justify-between gap-2"><span class="app-muted">WhatsApp</span><strong>${escHtml(r.customerPhone || "-")}</strong></div>
-                <div class="flex justify-between gap-2"><span class="app-muted">Tanggal</span><strong>${escHtml(r.startDate || "-")}</strong></div>
-                <div class="flex justify-between gap-2"><span class="app-muted">Jam Mulai</span><strong>${escHtml(r.startTime || "-")} WITA</strong></div>
-                <div class="flex justify-between gap-2"><span class="app-muted">Batas Kembali</span><strong class="text-emerald-600">${escHtml(returnText)}</strong></div>
-                ${r.cashierName ? `<div class="flex justify-between gap-2"><span class="app-muted">Petugas Kasir</span><strong>${escHtml(r.cashierName)}</strong></div>` : ""}
-                <div class="flex justify-between gap-2"><span class="app-muted">Jaminan</span><strong>${r.ktpHeldAtShop ? "KTP Asli di Kasir" : "Foto KTP Terlampir"}</strong></div>
-            </div>
-            <div class="space-y-1 border-b border-dashed gold-border pb-3">
-                <span class="text-[10px] uppercase font-bold app-muted block">Unit Sepeda (${r.quantity || 1} Unit • ${escHtml(r.durationLabel)}):</span>
-                ${unitLines}
-            </div>
-            <div class="flex items-center justify-between pt-0.5">
-                <span class="font-bold text-xs">Total Bayar</span>
-                <strong class="text-lg font-extrabold text-emerald-600">${fmtRp(r.totalPrice || 0)}</strong>
-            </div>
-        `;
+    const rows = [
+        { label: "No. Nota", value: String(r.id) },
+        { label: "Penyewa", value: r.customerName || r.customerUsername || "-" },
+        { label: "WhatsApp", value: r.customerPhone || "-" },
+        { label: "Tanggal", value: r.startDate || "-" },
+        { label: "Jam Mulai", value: `${r.startTime || "-"} WITA` },
+        { label: "Batas Kembali", value: returnText, accentCls: "text-emerald-600" },
+        { label: "Jaminan", value: r.ktpHeldAtShop ? "KTP Asli di Kasir" : "Foto KTP Terlampir" },
+        { label: "Status", value: r.status || "-" }
+    ];
+    if (Number(r.voucherDiscount || 0) > 0) {
+        rows.push({ label: `Voucher (${r.voucherCode || "PROMO"})`, value: `-${fmtRp(r.voucherDiscount)}`, accentCls: "text-emerald-600" });
+    }
+    if (extraH > 0) {
+        rows.push({ label: `Perpanjangan (+${extraH} Jam)`, value: fmtRp(r.extraFee || 0), accentCls: "text-blue-600" });
+    }
+    if (lateFee > 0) {
+        rows.push({ label: `Denda Telat (${r.lateHours || 1} Jam)`, value: `${fmtRp(lateFee)} (${(r.latePaymentMethod || "cash").toUpperCase()})`, accentCls: "text-red-500" });
+    }
+    if (handlerText) {
+        rows.push({ label: "Petugas / Kasir", value: handlerText });
     }
 
-    document.getElementById("modal-gowes-receipt")?.classList.remove("hide");
-    if (typeof mrNavPush === "function") mrNavPush({ type: "modal", id: "modal-gowes-receipt" });
-}
-
-function closeGowesReceiptModal() {
-    activeGowesReceiptRental = null;
-    document.getElementById("modal-gowes-receipt")?.classList.add("hide");
-    if (typeof _mrDropTopModalById === "function") _mrDropTopModalById("modal-gowes-receipt");
-}
-
-function sendActiveGowesReceiptWA() {
-    const r = activeGowesReceiptRental;
-    if (!r) return;
-    const waNum = _normalizeWaPhoneID(r.customerPhone);
-    const allBikes = Array.isArray(db.gowesBikes) && db.gowesBikes.length ? db.gowesBikes : DEFAULT_GOWES_BIKES;
-    const refBike = allBikes.find(b => String(b.id) === String(r.bikeId)) || null;
-    const iv = getBookingIntervalMinutes(r.startTime, r.durationKey, refBike, r.durationLabel);
-    const returnText = (r.durationKey === "full_day" && iv.durationHours === 0)
-        ? "20:00 WITA"
-        : `${iv.endColon} WITA${iv.nextDay ? " (Besok)" : ""}`;
-
-    const unitsStr = (Array.isArray(r.selectedBikes) && r.selectedBikes.length)
-        ? r.selectedBikes.map((sb, i) => `${i + 1}. ${sb.bikeName}`).join("\n")
-        : `1. ${r.bikeName}`;
-
-    const payText = r.isOffline
-        ? (r.paymentMethod === "cash" ? "Cash / Tunai (Lunas)" : "QRIS Kasir")
-        : "QRIS Online";
-
-    const msg =
+    const unitsStr = units.map((u, i) => `${i + 1}. ${u}`).join("\n");
+    const waText =
 `*STRUK SEWA SEPEDA — TITIK GOWES*
 Gerai: ${r.pickupLocation || r.branchCity || "Titik Gowes"}
 No. Nota: ${r.id}
@@ -1742,17 +1808,146 @@ Nama: *${r.customerName || "-"}*
 Tanggal: ${r.startDate}
 Jam Mulai: *${r.startTime} WITA*
 Batas Kembali: *${returnText}*
-Paket: ${r.durationLabel} (${r.quantity || 1} Unit)
+Paket: ${r.durationLabel} (${r.quantity || 1} Unit)${extraH > 0 ? ` + Perpanjang ${extraH} Jam` : ""}
 
 *Unit Sepeda:*
 ${unitsStr}
 
-Total Bayar: *${fmtRp(r.totalPrice || 0)}*
-Pembayaran: ${payText}
-Status: ${r.status}
+Biaya Sewa: ${fmtRp(r.totalPrice || 0)}${lateFee > 0 ? `\nDenda Keterlambatan (${r.lateHours || 1} Jam): ${fmtRp(lateFee)}` : ""}
+Total Bayar: *${fmtRp(grandTotal)}*
+Pembayaran: ${payBadge}
+Status: ${r.status}${handlerText ? `\nPetugas: ${handlerText}` : ""}
 
-Selamat bersepeda & utamakan keselamatan di jalan! 🚴‍♂️`;
+_Catatan: Toleransi pengembalian 20 menit per jam (lewat 21 mnt = 1 jam, 01:21 = 2 jam)._
+Selamat bersepeda & utamakan keselamatan di jalan!`;
 
+    openUniversalReceiptModal({
+        brand: "gowes",
+        brandName: "TITIK GOWES RENTAL",
+        subHeader: r.pickupLocation || r.branchCity || "Shelter Resmi Titik Gowes",
+        payBadge,
+        rows,
+        itemsHeader: `Unit Sepeda (${r.quantity || 1} Unit • ${r.durationLabel || ""})`,
+        items: units,
+        grandTotal,
+        grandTotalLabel: fmtRp(grandTotal),
+        footerNote: "Toleransi pengembalian 20 menit setiap jamnya (lewat 21 mnt = 1 jam, 01:21 = 2 jam).",
+        waPhone: r.customerPhone || "",
+        waText
+    });
+}
+
+function openLembarkuOrderReceiptModal(kind, docId) {
+    const isPf = kind === "pf" || kind === "portfolio" || kind === "coin_topup" || kind === "pro_upgrade" || kind === "cv_edit_addon";
+    const doc = isPf
+        ? (db.portfolios || []).find(p => String(p.id) === String(docId))
+        : (db.invitations || []).find(i => String(i.id) === String(docId));
+    if (!doc) return showToast("Data transaksi Lembarku tidak ditemukan.", "error");
+
+    const ownerObj = (db.users || []).find(u => String(u.username || "").toLowerCase() === String(doc.owner || "").toLowerCase());
+    const typeLabel = doc.docType === "coin_topup"
+        ? "Top-Up Coin"
+        : doc.docType === "pro_upgrade"
+            ? "Upgrade Akun PRO"
+            : doc.docType === "cv_edit_addon"
+                ? "Tambah +2x Edit CV"
+                : isPf
+                    ? (doc.docType === "lamaran" ? "Surat Lamaran Kerja" : "Curriculum Vitae (CV)")
+                    : `Undangan ${doc.category || "Digital"}`;
+    const dtStr = new Date(Number(doc.createdAt || doc.id || Date.now())).toLocaleDateString("id-ID", { day: "2-digit", month: "short", year: "numeric", hour: "2-digit", minute: "2-digit" });
+    const handlerText = (doc.handledBy && doc.handledBy.name) ? `${doc.handledBy.name} (@${doc.handledBy.username})` : "";
+    const grandTotal = Number(doc.totalPay || doc.price || 0);
+    const payBadge = doc.coinCost > 0
+        ? `LUNAS • ${doc.coinCost} COIN`
+        : (doc.status === "Aktif" ? "LUNAS • TERKONFIRMASI" : String(doc.status || "PROSES").toUpperCase());
+
+    const rows = [
+        { label: "No. Order", value: `#${doc.id}` },
+        { label: "Tanggal", value: dtStr },
+        { label: "Pemesan", value: `${(ownerObj && ownerObj.name) || doc.fullName || doc.owner || "-"}` },
+        { label: "Layanan", value: typeLabel },
+        { label: "Desain / Paket", value: doc.themeName || doc.theme || "-" },
+        { label: "Status", value: doc.status || "-" }
+    ];
+    if (Number(doc.voucherDiscount || 0) > 0) {
+        rows.push({ label: `Voucher (${doc.voucherCode || "PROMO"})`, value: `-${fmtRp(doc.voucherDiscount)}`, accentCls: "text-emerald-600" });
+    }
+    if (Number(doc.uniqueCode || 0) > 0 && !doc.coinCost) {
+        rows.push({ label: "Kode Unik", value: fmtRp(doc.uniqueCode) });
+    }
+    if (handlerText) {
+        rows.push({ label: "Diproses Oleh", value: handlerText });
+    }
+
+    const totalLbl = doc.coinCost > 0 ? `${doc.coinCost} Coin` : fmtRp(grandTotal);
+    const waText =
+`*STRUK TRANSAKSI RESMI — LEMBARKU*
+No. Order: #${doc.id}
+Tanggal: ${dtStr}
+
+Pemesan: *${(ownerObj && ownerObj.name) || doc.fullName || doc.owner || "-"}*
+Layanan: ${typeLabel}
+Judul: *${doc.title || "-"}*
+Desain / Paket: ${doc.themeName || doc.theme || "-"}${Number(doc.voucherDiscount || 0) > 0 ? `\nDiskon Voucher (${doc.voucherCode}): -${fmtRp(doc.voucherDiscount)}` : ""}
+
+Total Pembayaran: *${totalLbl}*
+Status: ${payBadge}${handlerText ? `\nPetugas: ${handlerText}` : ""}
+
+Terima kasih telah menggunakan layanan Lembarku!`;
+
+    openUniversalReceiptModal({
+        brand: "lembarku",
+        brandName: "LEMBARKU DIGITAL",
+        subHeader: "Undangan Digital, CV & Surat Lamaran Resmi",
+        payBadge,
+        rows,
+        itemsHeader: "Detail Produk",
+        items: [`${doc.title || typeLabel}`],
+        grandTotal: doc.coinCost > 0 ? 0 : grandTotal,
+        grandTotalLabel: totalLbl,
+        footerNote: doc.coinCost > 0
+            ? `Pembayaran menggunakan saldo ${doc.coinCost} Coin Lembarku.`
+            : "Simpan struk ini sebagai bukti transaksi resmi Lembarku.",
+        waPhone: (ownerObj && ownerObj.phone) || doc.phone || "",
+        waText
+    });
+}
+
+function closeGowesReceiptModal() {
+    activeGowesReceiptRental = null;
+    activeUniversalReceipt = null;
+    document.getElementById("modal-gowes-receipt")?.classList.add("hide");
+    if (typeof _mrDropTopModalById === "function") _mrDropTopModalById("modal-gowes-receipt");
+}
+
+function printActiveUniversalReceipt() {
+    if (!activeUniversalReceipt) return;
+    const sheet = document.getElementById("receipt-print-sheet");
+    if (!sheet) return window.print();
+    sheet.innerHTML = _buildPrintableReceiptHtml(activeUniversalReceipt);
+    document.body.classList.add("printing-receipt");
+
+    const cleanup = () => {
+        document.body.classList.remove("printing-receipt");
+        window.removeEventListener("afterprint", cleanup);
+    };
+    window.addEventListener("afterprint", cleanup);
+    setTimeout(() => {
+        window.print();
+        setTimeout(cleanup, 1200);
+    }, 120);
+}
+
+function copyActiveReceiptText() {
+    if (!activeUniversalReceipt || !activeUniversalReceipt.waText) return;
+    navigator.clipboard?.writeText(activeUniversalReceipt.waText);
+    showToast("Teks struk berhasil disalin!");
+}
+
+function sendActiveGowesReceiptWA() {
+    if (!activeUniversalReceipt) return;
+    const waNum = _normalizeWaPhoneID(activeUniversalReceipt.waPhone || "");
+    const msg = activeUniversalReceipt.waText || "";
     const url = waNum
         ? `https://wa.me/${waNum}?text=${encodeURIComponent(msg)}`
         : `https://wa.me/?text=${encodeURIComponent(msg)}`;
@@ -1988,7 +2183,8 @@ function openGowesRentalDetail(rentalId) {
                     <div class="flex justify-between"><span class="app-muted">Jadwal:</span><strong class="font-bold text-emerald-600">${escHtml(r.startDate)} pukul ${escHtml(r.startTime)} WITA</strong></div>
                     <div class="flex justify-between"><span class="app-muted">Gerai Cabang:</span><strong class="font-bold">${escHtml(r.pickupLocation || "Shelter Utama")}</strong></div>
                     <div class="flex justify-between"><span class="app-muted">Jaminan:</span><strong class="font-bold">${r.ktpHeldAtShop ? "KTP Asli di Kasir" : "Foto KTP Terlampir"}</strong></div>
-                    ${r.cashierName ? `<div class="flex justify-between"><span class="app-muted">Kasir Input:</span><strong class="font-bold">${escHtml(r.cashierName)}</strong></div>` : ""}
+                    ${(r.handledBy && r.handledBy.name) ? `<div class="flex justify-between"><span class="app-muted">Petugas:</span><strong class="font-bold">${escHtml(r.handledBy.name)} (@${escHtml(r.handledBy.username || "")})</strong></div>` : (r.cashierName ? `<div class="flex justify-between"><span class="app-muted">Kasir Input:</span><strong class="font-bold">${escHtml(r.cashierName)}</strong></div>` : "")}
+                    ${Number(r.lateFee || 0) > 0 ? `<div class="flex justify-between"><span class="app-muted">Denda Telat (${r.lateHours || 1} Jam):</span><strong class="font-bold text-red-500">${fmtRp(r.lateFee)}</strong></div>` : ""}
                     <div class="flex justify-between"><span class="app-muted">Status:</span><span class="font-extrabold text-emerald-600">${escHtml(r.status)}</span></div>
                 </div>
                 ${r.handoverOutPhoto ? `<div class="space-y-1"><span class="text-[10px] font-bold uppercase app-muted block">Foto Fisik Sepeda Saat Diambil:</span><img src="${r.handoverOutPhoto}" class="w-full h-36 object-contain rounded-xl bg-black border gold-border"></div>` : ""}

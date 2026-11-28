@@ -1308,11 +1308,79 @@ function collectPortfolioFormPayload(isPreviewOnly = false) {
     };
 }
 
+async function requestCvExtraEditsOrder(pfId) {
+    const pf = (db.portfolios || []).find(p => String(p.id) === String(pfId));
+    if (!pf || pf.docType === "lamaran") return showToast("Fitur tambah kuota edit hanya berlaku untuk CV.", "info");
+    if (pf.status !== "Aktif") return showToast("CV harus berstatus Aktif terlebih dahulu.", "error");
+    const u = typeof getCurrentUserObj === "function" ? getCurrentUserObj() : null;
+    if (!u) return showToast("Silakan masuk akun terlebih dahulu.", "info");
+
+    const basePrice = Number(pf.price || 20000);
+    const halfPrice = Math.max(1000, Math.round(basePrice * 0.5));
+    const ok = await showConfirm(
+        "Ajukan Tambahan +2x Edit CV",
+        `Batas revisi CV "${pf.title}" sudah habis (${pf.editCount || 0}/${pf.maxEdits || 2}). Tambah kuota +2x edit lagi dengan biaya 50% harga CV (${fmtRp(halfPrice)})?`,
+        "fa-solid fa-pen-to-square",
+        `Bayar ${fmtRp(halfPrice)}`
+    );
+    if (!ok) return;
+
+    const newId = Date.now();
+    const uniqueCode = getDeterministicUniqueCode(newId);
+    const orderDoc = {
+        id: newId,
+        createdAt: newId,
+        owner: currentSessionUser,
+        docType: "cv_edit_addon",
+        targetPfId: pf.id,
+        targetTitle: pf.title,
+        addEdits: 2,
+        themeId: pf.themeId || "cv_emerald",
+        themeName: `Tambah +2x Edit — ${pf.title}`,
+        title: `Tambah +2x Edit CV (${pf.title})`,
+        price: halfPrice,
+        origPrice: basePrice,
+        uniqueCode,
+        totalPay: halfPrice + uniqueCode,
+        status: "Menunggu Pembayaran",
+        paymentProof: "",
+        fullName: u.name || u.username
+    };
+
+    showLoading("Menyiapkan QRIS Tambah Edit CV...");
+    const res = await apiAction({ action: "upsert_portfolio", portfolio: orderDoc });
+    hideLoading();
+    if (!res || !res.ok) return showToast((res && res.message) || "Gagal membuat pengajuan tambah edit CV.", "error");
+
+    if (!Array.isArray(db.portfolios)) db.portfolios = [];
+    if (!db.portfolios.some(p => String(p.id) === String(orderDoc.id))) {
+        db.portfolios.unshift(orderDoc);
+        idbSet("db_snapshot", db);
+    }
+    if (typeof openUnifiedPayment === "function") openUnifiedPayment("cv_edit_addon", orderDoc.id);
+}
+
 function openEditPortfolio(pfId, isAdminDirect = false) {
     const pf = (db.portfolios || []).find(p => String(p.id) === String(pfId)); if (!pf) return;
-    if (!isAdminDirect) {
-        if (pf.status !== "Aktif") return showToast("Berkas baru bisa direvisi setelah aktif.", "error");
-        if ((pf.editCount || 0) >= 2) return showToast("Kuota revisi maksimal (2 kali) sudah habis.", "error");
+    const curU = typeof getCurrentUserObj === "function" ? getCurrentUserObj() : null;
+    const isStaffDirect = !!(isAdminDirect && curU && (curU.role === "master" || curU.role === "administrasi"));
+    const isCabangDirect = !!(isAdminDirect && curU && curU.role === "cabang");
+    const editRule = typeof getProjectEditRuleInfo === "function"
+        ? getProjectEditRuleInfo(pf, isCabangDirect)
+        : { isCv: pf.docType !== "lamaran", isExpired: false, maxEdits: 2, editsLeft: Math.max(0, 2 - (pf.editCount || 0)), canBuyCvAddon: false, addonHalfPrice: 10000 };
+
+    if (!isStaffDirect) {
+        if (editRule.isExpired) return showToast("Masa edit Surat Lamaran (maksimal 3 minggu / 21 hari) sudah habis.", "error");
+        if (!isCabangDirect) {
+            if (pf.status !== "Aktif") return showToast("Berkas baru bisa direvisi setelah aktif.", "error");
+            if (editRule.editsLeft <= 0) {
+                if (editRule.canBuyCvAddon) {
+                    requestCvExtraEditsOrder(pf.id);
+                    return;
+                }
+                return showToast(`Kuota revisi maksimal (${editRule.maxEdits} kali) sudah habis.`, "error");
+            }
+        }
     }
     currentViewName = "portfolio_wizard";
     pfWizardState = {
@@ -1524,23 +1592,499 @@ async function _resolvePdfSafePhotoDataUrl(photoUrl) {
     return raw;
 }
 
+// ================= PERBAIKAN 3: AUTO-SCAN BERWARNA JERNIH, KAMERA & CROP 4 SUDUT AUTO-LURUS =================
 async function applyAutoScanFilter(dataUrl) {
     return await new Promise((resolve) => {
         const img = new Image();
         img.onload = () => {
-            const maxSide = 1240;
+            const maxSide = 1400;
             const sc = Math.min(1, maxSide / Math.max(img.width, img.height));
+            const w = Math.max(1, Math.round(img.width * sc));
+            const h = Math.max(1, Math.round(img.height * sc));
             const c = document.createElement("canvas");
-            c.width = Math.round(img.width * sc);
-            c.height = Math.round(img.height * sc);
-            const ctx = c.getContext("2d");
-            ctx.filter = "grayscale(100%) contrast(1.28) brightness(1.08)";
-            ctx.drawImage(img, 0, 0, c.width, c.height);
-            resolve(c.toDataURL("image/jpeg", 0.78));
+            c.width = w;
+            c.height = h;
+            const ctx = c.getContext("2d", { willReadFrequently: true });
+            ctx.drawImage(img, 0, 0, w, h);
+
+            try {
+                const imgData = ctx.getImageData(0, 0, w, h);
+                const d = imgData.data;
+
+                // 1. Hitung histogram luminansi untuk normalisasi white-point kertas tanpa mengubah warna asli
+                const hist = new Uint32Array(256);
+                const step = Math.max(1, Math.floor((w * h) / 25000));
+                let samples = 0;
+                for (let idx = 0; idx < d.length; idx += 4 * step) {
+                    const lum = (0.299 * d[idx] + 0.587 * d[idx + 1] + 0.114 * d[idx + 2]) | 0;
+                    hist[lum]++;
+                    samples++;
+                }
+                let acc = 0, pLow = 8, pHigh = 242;
+                for (let i = 0; i < 256; i++) {
+                    acc += hist[i];
+                    if (acc >= samples * 0.015) { pLow = Math.min(35, i); break; }
+                }
+                acc = 0;
+                for (let i = 255; i >= 0; i--) {
+                    acc += hist[i];
+                    if (acc >= samples * 0.03) { pHigh = Math.max(185, i); break; }
+                }
+                const range = Math.max(40, pHigh - pLow);
+
+                // 2. Perjelas kertas & teks secara berwarna (pertahankan hue/saturasi RGB)
+                const boosted = new Uint8ClampedArray(d.length);
+                for (let i = 0; i < d.length; i += 4) {
+                    let r = ((d[i] - pLow) * 255) / range;
+                    let g = ((d[i + 1] - pLow) * 255) / range;
+                    let b = ((d[i + 2] - pLow) * 255) / range;
+
+                    // Angkat shadow lembut & kontras S-curve ringan agar tulisan tegas tapi warna KTP/stempel tetap natural
+                    r = Math.max(0, Math.min(255, (r - 128) * 1.14 + 134));
+                    g = Math.max(0, Math.min(255, (g - 128) * 1.14 + 134));
+                    b = Math.max(0, Math.min(255, (b - 128) * 1.14 + 134));
+
+                    // Sedikit vibrance agar warna asli (stempel/KTP/logo) tidak pudar
+                    const avg = (r + g + b) / 3;
+                    boosted[i] = Math.max(0, Math.min(255, avg + (r - avg) * 1.10));
+                    boosted[i + 1] = Math.max(0, Math.min(255, avg + (g - avg) * 1.10));
+                    boosted[i + 2] = Math.max(0, Math.min(255, avg + (b - avg) * 1.10));
+                    boosted[i + 3] = 255;
+                }
+
+                // 3. Unsharp mask / sharpen ringan agar huruf kecil tajam seperti mesin scanner berwarna
+                const sharpAmount = 0.35;
+                const rowStride = w * 4;
+                for (let y = 1; y < h - 1; y++) {
+                    for (let x = 1; x < w - 1; x++) {
+                        const o = y * rowStride + x * 4;
+                        for (let ch = 0; ch < 3; ch++) {
+                            const center = boosted[o + ch];
+                            const blur = (
+                                boosted[o - rowStride + ch] +
+                                boosted[o + rowStride + ch] +
+                                boosted[o - 4 + ch] +
+                                boosted[o + 4 + ch]
+                            ) * 0.25;
+                            d[o + ch] = Math.max(0, Math.min(255, center + (center - blur) * sharpAmount));
+                        }
+                        d[o + 3] = 255;
+                    }
+                }
+                ctx.putImageData(imgData, 0, 0);
+                resolve(c.toDataURL("image/jpeg", 0.86));
+            } catch {
+                ctx.filter = "contrast(1.16) brightness(1.06) saturate(1.12)";
+                ctx.drawImage(img, 0, 0, w, h);
+                resolve(c.toDataURL("image/jpeg", 0.84));
+            }
         };
         img.onerror = () => resolve(dataUrl);
         img.src = dataUrl;
     });
+}
+
+// --- LIVE CAMERA CAPTURE ---
+let _docCamStream = null;
+
+async function openDocCameraCapture() {
+    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+        triggerFallbackCameraFileInput();
+        return;
+    }
+    const modal = document.getElementById("modal-doc-camera");
+    const video = document.getElementById("doc-cam-video");
+    if (!modal || !video) {
+        triggerFallbackCameraFileInput();
+        return;
+    }
+
+    try {
+        showLoading("Membuka kamera belakang...");
+        _docCamStream = await navigator.mediaDevices.getUserMedia({
+            video: {
+                facingMode: { ideal: "environment" },
+                width: { ideal: 1920 },
+                height: { ideal: 1080 }
+            },
+            audio: false
+        });
+        hideLoading();
+        video.srcObject = _docCamStream;
+        await video.play().catch(() => {});
+        modal.classList.remove("hide");
+        if (typeof mrNavPush === "function") mrNavPush({ type: "modal", id: "modal-doc-camera" });
+    } catch {
+        hideLoading();
+        triggerFallbackCameraFileInput();
+    }
+}
+
+function closeDocCameraCapture() {
+    if (_docCamStream) {
+        try { _docCamStream.getTracks().forEach(t => t.stop()); } catch {}
+        _docCamStream = null;
+    }
+    const video = document.getElementById("doc-cam-video");
+    if (video) video.srcObject = null;
+    document.getElementById("modal-doc-camera")?.classList.add("hide");
+    if (typeof _mrDropTopModalById === "function") _mrDropTopModalById("modal-doc-camera");
+}
+
+function triggerFallbackCameraFileInput() {
+    closeDocCameraCapture();
+    const inp = document.getElementById("smp-camera-fallback-inp");
+    if (inp) inp.click();
+}
+
+function captureDocCameraFrame() {
+    const video = document.getElementById("doc-cam-video");
+    if (!video || !video.videoWidth || !video.videoHeight) {
+        return showToast("Kamera belum siap, tunggu sebentar.", "info");
+    }
+    const c = document.createElement("canvas");
+    c.width = video.videoWidth;
+    c.height = video.videoHeight;
+    c.getContext("2d").drawImage(video, 0, 0, c.width, c.height);
+    const shotDataUrl = c.toDataURL("image/jpeg", 0.90);
+    closeDocCameraCapture();
+    openDocPerspectiveScanner(shotDataUrl, "Foto Kamera", null);
+}
+
+// --- 4-CORNER PERSPECTIVE CROP & AUTO-DEWARP ENGINE ---
+let _docScanState = {
+    img: null,
+    origDataUrl: "",
+    fileName: "Dokumen",
+    editAttId: null,
+    corners: [], // [{x,y} normalized 0..1: TL, TR, BR, BL]
+    dragIdx: -1,
+    dispW: 0,
+    dispH: 0
+};
+
+function openDocPerspectiveScanner(dataUrl, fileName = "Dokumen", editAttId = null) {
+    const modal = document.getElementById("modal-doc-scanner");
+    const canvas = document.getElementById("doc-scan-canvas");
+    if (!modal || !canvas) return;
+
+    const enhChk = document.getElementById("doc-scan-enhance-chk");
+    const mainChk = document.getElementById("smp-autoscan-chk");
+    if (enhChk && mainChk) enhChk.checked = !!mainChk.checked;
+
+    const im = new Image();
+    im.onload = () => {
+        _docScanState.img = im;
+        _docScanState.origDataUrl = dataUrl;
+        _docScanState.fileName = fileName || "Dokumen";
+        _docScanState.editAttId = editAttId || null;
+        _docScanState.dragIdx = -1;
+        resetDocScannerCorners(false);
+        modal.classList.remove("hide");
+        if (typeof mrNavPush === "function") mrNavPush({ type: "modal", id: "modal-doc-scanner" });
+        _bindDocScannerPointerEvents();
+        requestAnimationFrame(_drawDocScannerCanvas);
+    };
+    im.onerror = () => showToast("Gagal memuat gambar untuk di-crop.", "error");
+    im.src = dataUrl;
+}
+
+function closeDocPerspectiveScanner() {
+    _docScanState.dragIdx = -1;
+    document.getElementById("modal-doc-scanner")?.classList.add("hide");
+    if (typeof _mrDropTopModalById === "function") _mrDropTopModalById("modal-doc-scanner");
+}
+
+function resetDocScannerCorners(redraw = true) {
+    _docScanState.corners = [
+        { x: 0.08, y: 0.08 }, // TL
+        { x: 0.92, y: 0.08 }, // TR
+        { x: 0.92, y: 0.92 }, // BR
+        { x: 0.08, y: 0.92 }  // BL
+    ];
+    if (redraw) _drawDocScannerCanvas();
+}
+
+function rotateDocScannerImage(deg = 90) {
+    const im = _docScanState.img;
+    if (!im) return;
+    const c = document.createElement("canvas");
+    c.width = im.naturalHeight;
+    c.height = im.naturalWidth;
+    const ctx = c.getContext("2d");
+    ctx.translate(c.width / 2, c.height / 2);
+    ctx.rotate((deg * Math.PI) / 180);
+    ctx.drawImage(im, -im.naturalWidth / 2, -im.naturalHeight / 2);
+    const rotatedUrl = c.toDataURL("image/jpeg", 0.90);
+    const nextIm = new Image();
+    nextIm.onload = () => {
+        _docScanState.img = nextIm;
+        _docScanState.origDataUrl = rotatedUrl;
+        resetDocScannerCorners(true);
+    };
+    nextIm.src = rotatedUrl;
+}
+
+function _drawDocScannerCanvas() {
+    const canvas = document.getElementById("doc-scan-canvas");
+    const im = _docScanState.img;
+    if (!canvas || !im) return;
+
+    const wrap = canvas.parentElement;
+    const maxW = Math.max(260, (wrap && wrap.clientWidth) || 340);
+    const maxH = Math.max(240, Math.round(window.innerHeight * 0.52));
+    const scale = Math.min(maxW / im.naturalWidth, maxH / im.naturalHeight, 1);
+    const cw = Math.max(120, Math.round(im.naturalWidth * scale));
+    const ch = Math.max(120, Math.round(im.naturalHeight * scale));
+
+    canvas.width = cw;
+    canvas.height = ch;
+    _docScanState.dispW = cw;
+    _docScanState.dispH = ch;
+
+    const ctx = canvas.getContext("2d");
+    ctx.clearRect(0, 0, cw, ch);
+    ctx.drawImage(im, 0, 0, cw, ch);
+
+    const pts = _docScanState.corners.map(p => ({ x: p.x * cw, y: p.y * ch }));
+
+    // Overlay gelap di luar area dokumen 4 sudut
+    ctx.save();
+    ctx.fillStyle = "rgba(0, 0, 0, 0.45)";
+    ctx.beginPath();
+    ctx.rect(0, 0, cw, ch);
+    ctx.moveTo(pts[0].x, pts[0].y);
+    ctx.lineTo(pts[3].x, pts[3].y);
+    ctx.lineTo(pts[2].x, pts[2].y);
+    ctx.lineTo(pts[1].x, pts[1].y);
+    ctx.closePath();
+    ctx.fill("evenodd");
+    ctx.restore();
+
+    // Garis batas 4 sudut + garis bantu grid lurus
+    ctx.save();
+    ctx.strokeStyle = "#38bdf8";
+    ctx.lineWidth = 2.5;
+    ctx.beginPath();
+    ctx.moveTo(pts[0].x, pts[0].y);
+    pts.slice(1).forEach(p => ctx.lineTo(p.x, p.y));
+    ctx.closePath();
+    ctx.stroke();
+
+    // Titik pegangan 4 sudut yang besar & mudah digeser jari
+    pts.forEach((p, idx) => {
+        ctx.beginPath();
+        ctx.arc(p.x, p.y, _docScanState.dragIdx === idx ? 15 : 12, 0, Math.PI * 2);
+        ctx.fillStyle = _docScanState.dragIdx === idx ? "#f59e0b" : "#0284c7";
+        ctx.fill();
+        ctx.lineWidth = 2.5;
+        ctx.strokeStyle = "#ffffff";
+        ctx.stroke();
+    });
+    ctx.restore();
+}
+
+function _bindDocScannerPointerEvents() {
+    const canvas = document.getElementById("doc-scan-canvas");
+    if (!canvas || canvas.dataset.scanBound === "1") return;
+    canvas.dataset.scanBound = "1";
+
+    const getRelPos = (clientX, clientY) => {
+        const rect = canvas.getBoundingClientRect();
+        return {
+            x: Math.max(0, Math.min(1, (clientX - rect.left) / Math.max(1, rect.width))),
+            y: Math.max(0, Math.min(1, (clientY - rect.top) / Math.max(1, rect.height)))
+        };
+    };
+
+    const startDrag = (clientX, clientY) => {
+        const pos = getRelPos(clientX, clientY);
+        let bestIdx = -1, bestDist = 0.14;
+        _docScanState.corners.forEach((c, idx) => {
+            const d = Math.hypot(c.x - pos.x, c.y - pos.y);
+            if (d < bestDist) { bestDist = d; bestIdx = idx; }
+        });
+        _docScanState.dragIdx = bestIdx;
+        if (bestIdx >= 0) _drawDocScannerCanvas();
+    };
+
+    const moveDrag = (clientX, clientY) => {
+        if (_docScanState.dragIdx < 0) return;
+        const pos = getRelPos(clientX, clientY);
+        _docScanState.corners[_docScanState.dragIdx] = {
+            x: Math.max(0.01, Math.min(0.99, pos.x)),
+            y: Math.max(0.01, Math.min(0.99, pos.y))
+        };
+        _drawDocScannerCanvas();
+    };
+
+    const endDrag = () => {
+        if (_docScanState.dragIdx >= 0) {
+            _docScanState.dragIdx = -1;
+            _drawDocScannerCanvas();
+        }
+    };
+
+    canvas.addEventListener("touchstart", (e) => {
+        if (!e.touches.length) return;
+        e.preventDefault();
+        startDrag(e.touches[0].clientX, e.touches[0].clientY);
+    }, { passive: false });
+    canvas.addEventListener("touchmove", (e) => {
+        if (_docScanState.dragIdx < 0 || !e.touches.length) return;
+        e.preventDefault();
+        moveDrag(e.touches[0].clientX, e.touches[0].clientY);
+    }, { passive: false });
+    canvas.addEventListener("touchend", endDrag, { passive: true });
+
+    canvas.addEventListener("mousedown", (e) => startDrag(e.clientX, e.clientY));
+    window.addEventListener("mousemove", (e) => moveDrag(e.clientX, e.clientY));
+    window.addEventListener("mouseup", endDrag);
+}
+
+// Solver 8x8 linear equations untuk transformasi perspektif (meluruskan dokumen miring -> persegi panjang rata)
+function _solveHomographyMatrix(dstPts, srcPts) {
+    const A = [];
+    const B = [];
+    for (let i = 0; i < 4; i++) {
+        const x = dstPts[i].x, y = dstPts[i].y;
+        const u = srcPts[i].x, v = srcPts[i].y;
+        A.push([x, y, 1, 0, 0, 0, -u * x, -u * y]); B.push(u);
+        A.push([0, 0, 0, x, y, 1, -v * x, -v * y]); B.push(v);
+    }
+    const n = 8;
+    for (let col = 0; col < n; col++) {
+        let pivot = col;
+        for (let r = col + 1; r < n; r++) {
+            if (Math.abs(A[r][col]) > Math.abs(A[pivot][col])) pivot = r;
+        }
+        [A[col], A[pivot]] = [A[pivot], A[col]];
+        [B[col], B[pivot]] = [B[pivot], B[col]];
+        const div = A[col][col] || 1e-12;
+        for (let j = col; j < n; j++) A[col][j] /= div;
+        B[col] /= div;
+        for (let r = 0; r < n; r++) {
+            if (r === col) continue;
+            const f = A[r][col];
+            for (let j = col; j < n; j++) A[r][j] -= f * A[col][j];
+            B[r] -= f * B[col];
+        }
+    }
+    return [B[0], B[1], B[2], B[3], B[4], B[5], B[6], B[7], 1];
+}
+
+function warpPerspectiveDocument(img, normCorners) {
+    const sw = img.naturalWidth, sh = img.naturalHeight;
+    const srcCanvas = document.createElement("canvas");
+    srcCanvas.width = sw;
+    srcCanvas.height = sh;
+    const sCtx = srcCanvas.getContext("2d", { willReadFrequently: true });
+    sCtx.drawImage(img, 0, 0, sw, sh);
+    const srcData = sCtx.getImageData(0, 0, sw, sh).data;
+
+    const srcPts = normCorners.map(p => ({ x: p.x * sw, y: p.y * sh }));
+    const topW = Math.hypot(srcPts[1].x - srcPts[0].x, srcPts[1].y - srcPts[0].y);
+    const botW = Math.hypot(srcPts[2].x - srcPts[3].x, srcPts[2].y - srcPts[3].y);
+    const leftH = Math.hypot(srcPts[3].x - srcPts[0].x, srcPts[3].y - srcPts[0].y);
+    const rightH = Math.hypot(srcPts[2].x - srcPts[1].x, srcPts[2].y - srcPts[1].y);
+
+    let outW = Math.max(240, Math.round(Math.max(topW, botW)));
+    let outH = Math.max(240, Math.round(Math.max(leftH, rightH)));
+    const maxDim = 1350;
+    if (outW > maxDim || outH > maxDim) {
+        const s = maxDim / Math.max(outW, outH);
+        outW = Math.round(outW * s);
+        outH = Math.round(outH * s);
+    }
+
+    const dstPts = [
+        { x: 0, y: 0 },
+        { x: outW - 1, y: 0 },
+        { x: outW - 1, y: outH - 1 },
+        { x: 0, y: outH - 1 }
+    ];
+    const H = _solveHomographyMatrix(dstPts, srcPts);
+
+    const outCanvas = document.createElement("canvas");
+    outCanvas.width = outW;
+    outCanvas.height = outH;
+    const oCtx = outCanvas.getContext("2d");
+    const outImgData = oCtx.createImageData(outW, outH);
+    const od = outImgData.data;
+
+    for (let y = 0; y < outH; y++) {
+        for (let x = 0; x < outW; x++) {
+            const denom = H[6] * x + H[7] * y + H[8];
+            const sx = (H[0] * x + H[1] * y + H[2]) / denom;
+            const sy = (H[3] * x + H[4] * y + H[5]) / denom;
+            const oi = (y * outW + x) * 4;
+
+            if (sx >= 0 && sx < sw - 1 && sy >= 0 && sy < sh - 1) {
+                const x0 = sx | 0, y0 = sy | 0;
+                const fx = sx - x0, fy = sy - y0;
+                const i00 = (y0 * sw + x0) * 4;
+                const i10 = i00 + 4;
+                const i01 = i00 + sw * 4;
+                const i11 = i01 + 4;
+                const w00 = (1 - fx) * (1 - fy);
+                const w10 = fx * (1 - fy);
+                const w01 = (1 - fx) * fy;
+                const w11 = fx * fy;
+                od[oi] = srcData[i00] * w00 + srcData[i10] * w10 + srcData[i01] * w01 + srcData[i11] * w11;
+                od[oi + 1] = srcData[i00 + 1] * w00 + srcData[i10 + 1] * w10 + srcData[i01 + 1] * w01 + srcData[i11 + 1] * w11;
+                od[oi + 2] = srcData[i00 + 2] * w00 + srcData[i10 + 2] * w10 + srcData[i01 + 2] * w01 + srcData[i11 + 2] * w11;
+                od[oi + 3] = 255;
+            } else {
+                od[oi] = 255; od[oi + 1] = 255; od[oi + 2] = 255; od[oi + 3] = 255;
+            }
+        }
+    }
+    oCtx.putImageData(outImgData, 0, 0);
+    return outCanvas.toDataURL("image/jpeg", 0.88);
+}
+
+async function applyDocPerspectiveScan() {
+    if (!_docScanState.img || !sempurnakanPfDocObj) return;
+    setBtnLoading("btn-apply-doc-scan", true, "Meluruskan...");
+    await new Promise(r => setTimeout(r, 30));
+
+    try {
+        const warpedUrl = warpPerspectiveDocument(_docScanState.img, _docScanState.corners);
+        const doEnhance = !!document.getElementById("doc-scan-enhance-chk")?.checked;
+        const finalSrc = doEnhance ? await applyAutoScanFilter(warpedUrl) : warpedUrl;
+
+        if (!Array.isArray(sempurnakanPfDocObj.lampiranDocs)) sempurnakanPfDocObj.lampiranDocs = [];
+        if (_docScanState.editAttId) {
+            const idx = sempurnakanPfDocObj.lampiranDocs.findIndex(x => x.id === _docScanState.editAttId);
+            if (idx >= 0) {
+                sempurnakanPfDocObj.lampiranDocs[idx].src = finalSrc;
+                sempurnakanPfDocObj.lampiranDocs[idx].rawSrc = _docScanState.origDataUrl;
+            }
+        } else {
+            sempurnakanPfDocObj.lampiranDocs.push({
+                id: Date.now() + "_" + Math.random().toString(36).slice(2, 6),
+                name: _docScanState.fileName || "Dokumen",
+                rawSrc: _docScanState.origDataUrl,
+                src: finalSrc
+            });
+        }
+
+        await _persistSempurnakanAttachments();
+        renderSempurnakanAttachments();
+        closeDocPerspectiveScanner();
+        showToast("Dokumen berhasil diluruskan & dijernihkan!");
+    } catch {
+        showToast("Gagal memproses pelurusan dokumen.", "error");
+    } finally {
+        setBtnLoading("btn-apply-doc-scan", false);
+    }
+}
+
+function editAttachmentPerspective(attId) {
+    if (!sempurnakanPfDocObj) return;
+    const item = (sempurnakanPfDocObj.lampiranDocs || []).find(x => x.id === attId);
+    if (!item) return;
+    openDocPerspectiveScanner(item.rawSrc || item.src, item.name || "Dokumen", item.id);
 }
 
 async function openSempurnakanModal(pfId) {
@@ -1574,26 +2118,37 @@ function setPdfQualityMode(mode) {
     document.getElementById("smp-q-hd").className = `py-2.5 px-3 rounded-xl text-xs font-bold ${mode === "hd" ? "gold-pill-btn" : "app-btn-sec"}`;
 }
 
-async function addAttachmentsToSempurnakan(inp) {
+async function addAttachmentsToSempurnakan(inp, isSingleCamera = false) {
     const files = Array.from(inp.files || []); inp.value = "";
     if (!files.length || !sempurnakanPfDocObj) return;
+
+    // Jika 1 foto (dari kamera atau galeri satuan), langsung buka layar Crop 4 Sudut & Auto-Luruskan!
+    if (files.length === 1) {
+        showLoading("Menyiapkan editor crop 4 sudut...");
+        const raw = await quickResizeImage(files[0], 1500, 0.88);
+        hideLoading();
+        openDocPerspectiveScanner(raw, files[0].name || (isSingleCamera ? "Foto Kamera" : "Dokumen"), null);
+        return;
+    }
+
     const autoScan = !!document.getElementById("smp-autoscan-chk")?.checked;
-    showLoading(`Memproses ${files.length} lampiran...`);
+    showLoading(`Memproses ${files.length} lampiran berwarna...`);
     if (!Array.isArray(sempurnakanPfDocObj.lampiranDocs)) sempurnakanPfDocObj.lampiranDocs = [];
 
     for (const f of files) {
-        const raw = await quickResizeImage(f, 1240, 0.82);
+        const raw = await quickResizeImage(f, 1400, 0.86);
         const processed = autoScan ? await applyAutoScanFilter(raw) : raw;
         sempurnakanPfDocObj.lampiranDocs.push({
             id: Date.now() + "_" + Math.random().toString(36).slice(2, 6),
             name: f.name,
+            rawSrc: raw,
             src: processed
         });
     }
     await _persistSempurnakanAttachments();
     hideLoading();
     renderSempurnakanAttachments();
-    showToast(`${files.length} lampiran ditambahkan & tersimpan otomatis di HP!`);
+    showToast(`${files.length} lampiran ditambahkan! Ketuk "Crop / Lurus" pada tiap kartu jika posisi kertas miring.`);
 }
 
 async function removeSempurnakanAttachment(attId) {
@@ -1611,10 +2166,13 @@ function renderSempurnakanAttachments() {
         return;
     }
     box.innerHTML = list.map((item, idx) => `
-        <div class="app-card border rounded-xl p-2 relative space-y-1">
-            <button type="button" onclick="removeSempurnakanAttachment('${esc(item.id)}')" class="absolute top-1.5 right-1.5 w-6 h-6 rounded-full bg-red-600 text-white text-[10px]"><i class="fa-solid fa-xmark"></i></button>
+        <div class="app-card border rounded-xl p-2 relative space-y-1.5">
+            <button type="button" onclick="removeSempurnakanAttachment('${esc(item.id)}')" class="absolute top-1.5 right-1.5 w-6 h-6 rounded-full bg-red-600 text-white text-[10px] shadow"><i class="fa-solid fa-xmark"></i></button>
             <img src="${item.src}" class="w-full h-24 object-contain bg-white rounded-lg border">
-            <span class="text-[10px] font-bold block truncate">Lampiran #${idx + 1}</span>
+            <div class="flex items-center justify-between gap-1">
+                <span class="text-[10px] font-bold truncate">Lampiran #${idx + 1}</span>
+                <button type="button" onclick="editAttachmentPerspective('${esc(item.id)}')" class="px-2 py-0.5 rounded-lg app-accent-bg app-accent text-[9.5px] font-extrabold shrink-0"><i class="fa-solid fa-crop-simple mr-0.5"></i>Luruskan</button>
+            </div>
         </div>
     `).join("");
 }

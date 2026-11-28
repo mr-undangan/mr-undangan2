@@ -115,13 +115,13 @@ async function decodeQrisFromImageInput(inp) {
 
 // ================= 3. HALAMAN PEMBAYARAN / KONFIRMASI TERPADU =================
 async function openUnifiedPayment(kind, docId) {
-    const isPf = kind === "portfolio" || kind === "coin_topup" || kind === "pro_upgrade";
+    const isPf = kind === "portfolio" || kind === "coin_topup" || kind === "pro_upgrade" || kind === "cv_edit_addon";
     const doc = isPf
         ? (db.portfolios || []).find(p => String(p.id) === String(docId))
         : (db.invitations || []).find(i => String(i.id) === String(docId));
     if (!doc) return showToast("Data pesanan tidak ditemukan.", "error");
 
-    const isCoinOrPro = doc.docType === "coin_topup" || doc.docType === "pro_upgrade";
+    const isCoinOrPro = doc.docType === "coin_topup" || doc.docType === "pro_upgrade" || doc.docType === "cv_edit_addon";
     const resolvedKind = isCoinOrPro ? doc.docType : (isPf ? "portfolio" : "inv");
     const ms = db.masterSettings || {};
     const basePrice = Number(doc.price || (isPf ? 20000 : 99000));
@@ -165,21 +165,27 @@ async function openUnifiedPayment(kind, docId) {
             ? "TOP-UP COIN • QRIS DINAMIS"
             : doc.docType === "pro_upgrade"
                 ? "UPGRADE AKUN PRO • QRIS DINAMIS"
-                : "STATUS: ● MENUNGGU KONFIRMASI";
+                : doc.docType === "cv_edit_addon"
+                    ? "TAMBAH +2X EDIT CV • QRIS DINAMIS"
+                    : "STATUS: ● MENUNGGU KONFIRMASI";
     }
     if (headTxt) {
         headTxt.innerText = doc.docType === "coin_topup"
             ? "Isi Ulang Coin Lembarku"
             : doc.docType === "pro_upgrade"
                 ? "Upgrade ke Akun PRO"
-                : "Pesanan Tersimpan!";
+                : doc.docType === "cv_edit_addon"
+                    ? "Tambah Kuota +2x Edit CV"
+                    : "Pesanan Tersimpan!";
     }
 
     const prefixLbl = doc.docType === "coin_topup"
         ? "Top-Up Coin"
         : doc.docType === "pro_upgrade"
             ? "Upgrade PRO"
-            : isPf ? (doc.docType === "lamaran" ? "Surat Lamaran" : "CV") : "Undangan";
+            : doc.docType === "cv_edit_addon"
+                ? "Add-On +2x Edit CV"
+                : isPf ? (doc.docType === "lamaran" ? "Surat Lamaran" : "CV") : "Undangan";
     document.getElementById("pay-item-name").innerText = `${prefixLbl} — ${doc.title}`;
     document.getElementById("pay-unique-hint").classList.toggle("hide", !useUnique);
 
@@ -274,7 +280,7 @@ async function submitPaymentProofUnified() {
     const up = await apiAction({ action: "upload_media", dataUrl: tempPaymentProof, prefix: "proof" });
     const proofUrl = (up && up.ok && up.url) ? up.url : tempPaymentProof;
 
-    if (activePaymentState.kind === "portfolio" || activePaymentState.kind === "coin_topup" || activePaymentState.kind === "pro_upgrade") {
+    if (activePaymentState.kind === "portfolio" || activePaymentState.kind === "coin_topup" || activePaymentState.kind === "pro_upgrade" || activePaymentState.kind === "cv_edit_addon") {
         const pf = (db.portfolios || []).find(p => String(p.id) === String(activePaymentState.id));
         if (pf) {
             await apiAction({

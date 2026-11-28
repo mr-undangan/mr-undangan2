@@ -1,6 +1,6 @@
 // =========================================================================
 // TITIK GOWES — ADMIN FLEET, CABANG UNIT, BANNER 16:7, OVERDUE & KASIR
-// File: js/gowes-admin.js (V14.9 — Armada per Gerai, Cabang & Banner 16:7)
+// File: js/gowes-admin.js (V14.10 — Armada per Gerai, Cabang & Banner 16:7)
 // =========================================================================
 
 let mgbTempPhotoUrl = "";
@@ -61,7 +61,7 @@ function _getBranchLabelById(branchId) {
 
 function getGowesScheduleStatusInfo(rental) {
     if (!rental || !rental.startDate || !rental.startTime) {
-        return { state: "upcoming", badge: "Terjadwal", cls: "bg-blue-500/15 text-blue-600 border-blue-500/35", remainingMins: 999, deadlineLabel: "-" };
+        return { state: "upcoming", badge: "Terjadwal", cls: "bg-blue-500/15 text-blue-600 border-blue-500/35", remainingMins: 999, lateMinutes: 0, billableHours: 0, totalFine: 0, ratePerHour: 15000, deadlineLabel: "-" };
     }
     const allBikes = Array.isArray(db.gowesBikes) && db.gowesBikes.length ? db.gowesBikes : DEFAULT_GOWES_BIKES;
     const refBike = allBikes.find(b => String(b.id) === String(rental.bikeId)) || null;
@@ -69,26 +69,53 @@ function getGowesScheduleStatusInfo(rental) {
         ? getBookingIntervalMinutes(rental.startTime, rental.durationKey, refBike, rental.durationLabel)
         : { startMin: 480, endMin: 1200, endColon: "20:00", nextDay: false };
 
+    const extraH = Number(rental.extraHours || 0);
+    const totalEndMin = iv.endMin + extraH * 60;
+    const endH = Math.floor((totalEndMin % 1440) / 60);
+    const endM = totalEndMin % 60;
+    const deadlineLabel = `${String(endH).padStart(2, "0")}:${String(endM).padStart(2, "0")}`;
+
     const dParts = String(rental.startDate).split("-");
     if (dParts.length !== 3) {
-        return { state: "upcoming", badge: "Terjadwal", cls: "bg-blue-500/15 text-blue-600 border-blue-500/35", remainingMins: 999, deadlineLabel: iv.endColon };
+        return { state: "upcoming", badge: "Terjadwal", cls: "bg-blue-500/15 text-blue-600 border-blue-500/35", remainingMins: 999, lateMinutes: 0, billableHours: 0, totalFine: 0, ratePerHour: getBikeLateFeePerHour(refBike), deadlineLabel };
     }
-    const deadlineDt = new Date(parseInt(dParts[0], 10), parseInt(dParts[1], 10) - 1, parseInt(dParts[2], 10), 0, iv.endMin, 0);
+    const deadlineDt = new Date(parseInt(dParts[0], 10), parseInt(dParts[1], 10) - 1, parseInt(dParts[2], 10), 0, totalEndMin, 0);
     const diffMins = Math.round((deadlineDt.getTime() - Date.now()) / 60000);
+    const qty = Math.max(1, Number(rental.quantity || 1));
 
     if (rental.status === "Terkonfirmasi") {
-        return { state: "upcoming", badge: `Ambil ${rental.startTime}`, cls: "bg-blue-500/15 text-blue-600 border-blue-500/35", remainingMins: diffMins, deadlineLabel: iv.endColon };
+        return { state: "upcoming", badge: `Ambil ${rental.startTime}`, cls: "bg-blue-500/15 text-blue-600 border-blue-500/35", remainingMins: diffMins, lateMinutes: 0, billableHours: 0, totalFine: 0, ratePerHour: getBikeLateFeePerHour(refBike), deadlineLabel };
     }
     if (rental.status === "Sedang Digunakan") {
         if (diffMins < 0) {
             const over = Math.abs(diffMins);
             const h = Math.floor(over / 60), m = over % 60;
+            const fineInfo = typeof calculateGowesLateFee === "function"
+                ? calculateGowesLateFee(over, refBike, qty)
+                : { billableHours: over > 20 ? Math.ceil((over - 20) / 60) : 0, ratePerHour: 15000, totalFine: 0, withinTolerance: over <= 20 };
+            if (fineInfo.withinTolerance) {
+                return {
+                    state: "warning",
+                    badge: `TOLERANSI +${over} MNT`,
+                    cls: "bg-amber-400 text-black border-amber-500 font-extrabold",
+                    remainingMins: diffMins,
+                    lateMinutes: over,
+                    billableHours: 0,
+                    totalFine: 0,
+                    ratePerHour: fineInfo.ratePerHour,
+                    deadlineLabel
+                };
+            }
             return {
                 state: "overdue",
-                badge: h > 0 ? `LEWAT ${h}J ${m}M` : `LEWAT ${m} MNT`,
+                badge: h > 0 ? `LEWAT ${h}J ${m}M (${fineInfo.billableHours} JAM)` : `LEWAT ${m} MNT (${fineInfo.billableHours} JAM)`,
                 cls: "bg-red-600 text-white border-red-500 gowes-overdue-badge",
                 remainingMins: diffMins,
-                deadlineLabel: iv.endColon
+                lateMinutes: over,
+                billableHours: fineInfo.billableHours,
+                totalFine: fineInfo.totalFine,
+                ratePerHour: fineInfo.ratePerHour,
+                deadlineLabel
             };
         }
         if (diffMins <= 15) {
@@ -97,7 +124,11 @@ function getGowesScheduleStatusInfo(rental) {
                 badge: `SISA ${Math.max(1, diffMins)} MNT`,
                 cls: "bg-amber-400 text-black border-amber-500 font-extrabold",
                 remainingMins: diffMins,
-                deadlineLabel: iv.endColon
+                lateMinutes: 0,
+                billableHours: 0,
+                totalFine: 0,
+                ratePerHour: getBikeLateFeePerHour(refBike),
+                deadlineLabel
             };
         }
         const rh = Math.floor(diffMins / 60), rm = diffMins % 60;
@@ -106,10 +137,14 @@ function getGowesScheduleStatusInfo(rental) {
             badge: rh > 0 ? `Sisa ${rh}j ${rm}m` : `Sisa ${rm} mnt`,
             cls: "bg-emerald-500/18 text-emerald-600 border-emerald-500/35",
             remainingMins: diffMins,
-            deadlineLabel: iv.endColon
+            lateMinutes: 0,
+            billableHours: 0,
+            totalFine: 0,
+            ratePerHour: getBikeLateFeePerHour(refBike),
+            deadlineLabel
         };
     }
-    return { state: "pending", badge: rental.status || "Proses", cls: "bg-zinc-500/15 app-muted border-zinc-400/30", remainingMins: diffMins, deadlineLabel: iv.endColon };
+    return { state: "pending", badge: rental.status || "Proses", cls: "bg-zinc-500/15 app-muted border-zinc-400/30", remainingMins: diffMins, lateMinutes: 0, billableHours: 0, totalFine: 0, ratePerHour: getBikeLateFeePerHour(refBike), deadlineLabel };
 }
 
 function buildGowesTodayScheduleBoardHtml() {
@@ -702,6 +737,8 @@ function openMasterGowesBikeModal(bikeId = null, prefillBranchId = null) {
     document.getElementById("mgb-p2h").value = isEdit ? (b.price2Hours || 40000) : 40000;
     document.getElementById("mgb-p6h").value = isEdit ? (b.price6Hours || 75000) : 75000;
     document.getElementById("mgb-pfullday").value = isEdit ? (b.priceFullDay || 120000) : 120000;
+    const lateEl = document.getElementById("mgb-late-fee");
+    if (lateEl) lateEl.value = isEdit ? (b.lateFeePerHour || 15000) : 15000;
     document.getElementById("mgb-status").value = isEdit ? (b.status || "Tersedia") : "Tersedia";
     document.getElementById("mgb-accessories").value = isEdit ? (Array.isArray(b.freeAccessories) ? b.freeAccessories.join(", ") : (b.freeAccessories || "")) : "Helm Sepeda, Kunci Gembok Spiral, Lampu Malam";
     document.getElementById("mgb-desc").value = isEdit ? (b.description || "") : "";
@@ -760,6 +797,7 @@ async function submitMasterGowesBikeModal(e) {
     const price2Hours = Number(document.getElementById("mgb-p2h").value || 40000);
     const price6Hours = Number(document.getElementById("mgb-p6h").value || 75000);
     const priceFullDay = Number(document.getElementById("mgb-pfullday").value || 120000);
+    const lateFeePerHour = Math.max(0, Math.round(Number(document.getElementById("mgb-late-fee")?.value || 15000)));
     const status = document.getElementById("mgb-status").value;
     const rawAcc = document.getElementById("mgb-accessories").value.trim();
     const description = document.getElementById("mgb-desc").value.trim();
@@ -772,7 +810,7 @@ async function submitMasterGowesBikeModal(e) {
         id: bikeId || ("bike_" + Date.now()),
         branchId, name, type, frameSize, gears, brakes,
         label2Hours, label6Hours, labelFullDay,
-        price2Hours, price6Hours, priceFullDay,
+        price2Hours, price6Hours, priceFullDay, lateFeePerHour,
         status, freeAccessories, description, image: finalImage
     };
 
@@ -996,34 +1034,21 @@ async function submitGowesHandoverPhoto() {
 
 // ================= 4. DETEKSI LEWAT WAKTU (OVERDUE) & KARTU ORDER ADMIN =================
 function getGowesRentalOverdueInfo(rental) {
-    if (!rental || rental.status !== "Sedang Digunakan" || !rental.startDate || !rental.startTime) {
-        return { isOverdue: false, label: "", deadlineLabel: "" };
+    const info = getGowesScheduleStatusInfo(rental);
+    if (!rental || rental.status !== "Sedang Digunakan" || info.lateMinutes <= 0) {
+        return { isOverdue: false, label: "", deadlineLabel: info.deadlineLabel || "", billableHours: 0, totalFine: 0, lateMinutes: 0 };
     }
-    const allBikes = Array.isArray(db.gowesBikes) && db.gowesBikes.length ? db.gowesBikes : DEFAULT_GOWES_BIKES;
-    const refBike = allBikes.find(b => String(b.id) === String(rental.bikeId)) || null;
-    const iv = typeof getBookingIntervalMinutes === "function"
-        ? getBookingIntervalMinutes(rental.startTime, rental.durationKey, refBike, rental.durationLabel)
-        : { endMin: 20 * 60, endColon: "20:00", nextDay: false };
-
-    const dParts = String(rental.startDate).split("-");
-    if (dParts.length !== 3) return { isOverdue: false, label: "", deadlineLabel: iv.endColon };
-
-    const deadlineDate = new Date(
-        parseInt(dParts[0], 10),
-        parseInt(dParts[1], 10) - 1,
-        parseInt(dParts[2], 10),
-        0,
-        iv.endMin,
-        0
-    );
-    const diffMs = Date.now() - deadlineDate.getTime();
-    if (diffMs <= 60000) return { isOverdue: false, label: "", deadlineLabel: iv.endColon };
-
-    const overMins = Math.floor(diffMs / 60000);
-    const hrs = Math.floor(overMins / 60);
-    const mins = overMins % 60;
-    const label = hrs > 0 ? `LEWAT ${hrs} JAM ${mins} MNT` : `LEWAT ${mins} MENIT`;
-    return { isOverdue: true, label, deadlineLabel: iv.endColon };
+    return {
+        isOverdue: info.state === "overdue",
+        withinTolerance: info.billableHours === 0,
+        label: info.billableHours > 0
+            ? `${info.badge} • Denda ${fmtRp(info.totalFine)}`
+            : info.badge,
+        deadlineLabel: info.deadlineLabel,
+        billableHours: info.billableHours,
+        totalFine: info.totalFine,
+        lateMinutes: info.lateMinutes
+    };
 }
 
 function sendGowesOverdueReminderWA(rentalId) {
@@ -1032,8 +1057,16 @@ function sendGowesOverdueReminderWA(rentalId) {
     let digits = String(r.customerPhone || "").replace(/\D/g, "");
     if (digits.startsWith("0")) digits = "62" + digits.slice(1);
     else if (digits.startsWith("8")) digits = "62" + digits;
-    const od = getGowesRentalOverdueInfo(r);
-    const msg = `Halo Kak ${r.customerName || ""}, kami dari *${r.pickupLocation || "Titik Gowes"}*. Mengingatkan bahwa durasi sewa sepeda *${r.bikeName}* (${r.durationLabel}) sudah melewati batas waktu pengembalian (${od.deadlineLabel} WITA). Mohon konfirmasinya ya Kak, terima kasih!`;
+    const info = getGowesScheduleStatusInfo(r);
+
+    let msg = "";
+    if (info.state === "overdue" && info.billableHours > 0) {
+        msg = `Halo Kak ${r.customerName || ""}, kami dari *${r.pickupLocation || "Titik Gowes"}*. Mengingatkan bahwa sewa sepeda *${r.bikeName}* (${r.durationLabel}) sudah lewat ${info.lateMinutes} menit dari batas pengembalian (${info.deadlineLabel} WITA).\n\nSesuai ketentuan toleransi 20 menit per jam, saat ini terhitung penyesuaian keterlambatan *${info.billableHours} jam* sebesar *${fmtRp(info.totalFine)}*. Mohon konfirmasi pengembaliannya ya Kak, terima kasih!`;
+    } else if (info.lateMinutes > 0) {
+        msg = `Halo Kak ${r.customerName || ""}, kami dari *${r.pickupLocation || "Titik Gowes"}*. Waktu sewa sepeda *${r.bikeName}* sudah melewati pukul ${info.deadlineLabel} WITA (${info.lateMinutes} menit). Masih dalam batas toleransi 20 menit gratis — mohon segera dikembalikan sebelum menit ke-21 agar tidak terkena biaya tambahan 1 jam ya Kak!`;
+    } else {
+        msg = `Halo Kak ${r.customerName || ""}, kami dari *${r.pickupLocation || "Titik Gowes"}*. Mengingatkan waktu sewa sepeda *${r.bikeName}* tersisa sekitar *${Math.max(1, info.remainingMins)} menit* lagi (batas kembali ${info.deadlineLabel} WITA). Ditunggu di garasi ya Kak, terima kasih!`;
+    }
     window.open(`https://wa.me/${digits}?text=${encodeURIComponent(msg)}`, "_blank", "noopener,noreferrer");
 }
 
@@ -1103,6 +1136,7 @@ function buildGowesOrderCardHtml(rental, options = {}) {
                     ${rental.ktpHeldAtShop ? `<span class="text-purple-600"><i class="fa-solid fa-id-card mr-0.5"></i>KTP di Kasir</span>` : ""}
                     ${rental.handoverOutPhoto ? `<span class="text-blue-500"><i class="fa-solid fa-camera mr-0.5"></i>Foto Keluar ✓</span>` : ""}
                     ${rental.handoverInPhoto ? `<span class="text-emerald-500"><i class="fa-solid fa-camera mr-0.5"></i>Foto Kembali ✓</span>` : ""}
+                    ${typeof formatHandledByBadgeHtml === "function" ? formatHandledByBadgeHtml(rental) : ""}
                 </div>
             </div>
 
@@ -1114,7 +1148,7 @@ function buildGowesOrderCardHtml(rental, options = {}) {
                 ${rental.isOffline && isPay && rental.paymentMethod === "qris" ? `<button type="button" onclick="openGowesOfflineQrisModal((db.gowesRentals||[]).find(x=>String(x.id)==='${esc(rental.id)}'))" class="px-3 py-1.5 rounded-xl bg-blue-600 text-white text-xs font-bold shadow-sm"><i class="fa-solid fa-qrcode mr-1"></i>Scan QRIS</button>` : ""}
                 ${(isVerif || (isPay && !rental.isOffline)) ? `<button type="button" onclick="setGowesRentalStatus('${esc(rental.id)}','Terkonfirmasi',this)" class="gowes-pill-btn px-3.5 py-1.5 rounded-xl text-xs font-bold shadow-sm">✓ ACC Bayar</button>` : ""}
                 ${isConfirmed ? `<button type="button" onclick="openGowesHandoverModal('${esc(rental.id)}','out')" class="px-3 py-1.5 rounded-xl app-card-soft border text-blue-600 text-xs font-bold"><i class="fa-solid fa-camera mr-1"></i>Foto Keluar</button><button type="button" onclick="setGowesRentalStatus('${esc(rental.id)}','Sedang Digunakan',this)" class="gowes-pill-btn px-3.5 py-1.5 rounded-xl text-xs font-bold shadow-sm"><i class="fa-solid fa-key mr-1"></i>Serahkan Unit</button>` : ""}
-                ${isInUse ? `<button type="button" onclick="openGowesHandoverModal('${esc(rental.id)}','in')" class="px-3 py-1.5 rounded-xl app-card-soft border text-emerald-600 text-xs font-bold"><i class="fa-solid fa-camera mr-1"></i>Foto Kembali</button><button type="button" onclick="setGowesRentalStatus('${esc(rental.id)}','Selesai',this)" class="px-3.5 py-1.5 rounded-xl bg-emerald-600 text-white text-xs font-bold shadow-sm">✓ Unit Selesai</button>` : ""}
+                ${isInUse ? `<button type="button" onclick="openGowesHandoverModal('${esc(rental.id)}','in')" class="px-3 py-1.5 rounded-xl app-card-soft border text-emerald-600 text-xs font-bold"><i class="fa-solid fa-camera mr-1"></i>Foto Kembali</button><button type="button" onclick="openBikeCheckinModal('${esc(rental.id)}')" class="px-3.5 py-1.5 rounded-xl bg-emerald-600 text-white text-xs font-bold shadow-sm">✓ Terima Unit</button>` : ""}
                 ${!isCanceled ? `<button type="button" onclick="openGowesReceiptModal('${esc(rental.id)}')" class="px-3 py-1.5 rounded-xl app-card-soft border text-emerald-700 text-xs font-bold" title="Struk & Kirim WA"><i class="fa-solid fa-receipt mr-1"></i>Struk</button>` : ""}
                 ${!isDone && !isCanceled ? `<button type="button" onclick="setGowesRentalStatus('${esc(rental.id)}','Dibatalkan',this)" class="px-2.5 py-1.5 rounded-xl bg-red-600/15 text-red-500 text-xs font-bold" title="Batalkan Sewa"><i class="fa-solid fa-xmark"></i></button>` : ""}
                 <button type="button" onclick="openGowesRentalDetail('${esc(rental.id)}')" class="px-3 py-1.5 rounded-xl app-btn-sec text-xs font-bold">Detail</button>
@@ -1131,7 +1165,8 @@ async function setGowesRentalStatus(rentalId, nextStatus, btnEl) {
     }
 
     if (btnEl) setBtnLoading(btnEl, true, "...");
-    const res = await apiAction({ action: "gowes_update_rental_status", rentalId: String(rentalId), status: nextStatus });
+    const hbMeta = typeof buildHandledByMeta === "function" ? buildHandledByMeta() : null;
+    const res = await apiAction({ action: "gowes_update_rental_status", rentalId: String(rentalId), status: nextStatus, handledBy: hbMeta });
     if (btnEl) setBtnLoading(btnEl, false);
 
     if (!res || !res.ok || !res.rental) {
@@ -1143,6 +1178,7 @@ async function setGowesRentalStatus(rentalId, nextStatus, btnEl) {
         db.gowesTodayBookings = res.upcomingBookings;
     }
     if (!Array.isArray(db.gowesRentals)) db.gowesRentals = [];
+    if (hbMeta && !res.rental.handledBy) res.rental.handledBy = hbMeta;
     const idx = db.gowesRentals.findIndex(r => String(r.id) === String(rentalId));
     if (idx >= 0) db.gowesRentals[idx] = res.rental;
 
@@ -1363,4 +1399,418 @@ function buildGowesAnalyticsDashboardHtml() {
             </div>
         </div>
     `;
+}
+
+// ================= 7. DATA LIVE SEPEDA (REAL-TIME MONITOR, EXTEND & CHECK-IN DENDA 20 MENIT) =================
+let _liveBikesFilter = "all"; // all | active | warning | overdue | ready
+let _liveBikesRefreshTimer = null;
+let _activeCheckinRentalId = "";
+let _checkinReturnPhoto = "";
+
+function openLiveBikesMonitorModal() {
+    const curU = typeof getCurrentUserObj === "function" ? getCurrentUserObj() : null;
+    if (!curU || (curU.role !== "master" && curU.role !== "administrasi")) {
+        return showToast("Halaman Data Live Sepeda khusus untuk Tim Administrasi & Founder.", "error");
+    }
+    _liveBikesFilter = "all";
+    renderLiveBikesMonitorModal();
+    document.getElementById("modal-live-bikes-monitor")?.classList.remove("hide");
+    if (typeof mrNavPush === "function") mrNavPush({ type: "modal", id: "modal-live-bikes-monitor" });
+
+    clearInterval(_liveBikesRefreshTimer);
+    _liveBikesRefreshTimer = setInterval(() => {
+        const mod = document.getElementById("modal-live-bikes-monitor");
+        if (mod && !mod.classList.contains("hide") && !document.hidden) {
+            renderLiveBikesMonitorModal();
+        }
+    }, 30000);
+}
+
+function closeLiveBikesMonitorModal() {
+    clearInterval(_liveBikesRefreshTimer);
+    _liveBikesRefreshTimer = null;
+    document.getElementById("modal-live-bikes-monitor")?.classList.add("hide");
+    if (typeof _mrDropTopModalById === "function") _mrDropTopModalById("modal-live-bikes-monitor");
+}
+
+async function refreshLiveBikesMonitor(showFeedback = false) {
+    if (showFeedback) showLoading("Menyegarkan data live sepeda...");
+    if (typeof fetchFullCloud === "function") await fetchFullCloud();
+    if (showFeedback) hideLoading();
+    renderLiveBikesMonitorModal();
+    if (typeof renderStaffAdmin === "function" && currentViewName === "staff") renderStaffAdmin();
+    if (showFeedback) showToast("Data Live Sepeda diperbarui!");
+}
+
+function setLiveBikesFilter(f) {
+    _liveBikesFilter = f || "all";
+    renderLiveBikesMonitorModal();
+}
+
+function renderLiveBikesMonitorModal() {
+    const box = document.getElementById("lbm-body");
+    if (!box) return;
+
+    const bikes = (Array.isArray(db.gowesBikes) && db.gowesBikes.length ? db.gowesBikes : DEFAULT_GOWES_BIKES).filter(b => b && b.status !== "Dihapus");
+    const todayStr = new Date().toISOString().split("T")[0];
+    const allRentals = Array.isArray(db.gowesRentals) ? db.gowesRentals : [];
+    const todayRentals = allRentals.filter(r => {
+        if (!r || r.status === "Dibatalkan" || r.status === "Selesai") return false;
+        return r.status === "Sedang Digunakan" || String(r.startDate || "") === todayStr;
+    });
+
+    const liveUnits = bikes.map(b => {
+        const activeRental = todayRentals.find(r => {
+            if (r.status !== "Sedang Digunakan") return false;
+            return (Array.isArray(r.selectedBikes) && r.selectedBikes.length)
+                ? r.selectedBikes.some(sb => String(sb.bikeId) === String(b.id))
+                : String(r.bikeId) === String(b.id);
+        }) || null;
+
+        const nextConfirmed = !activeRental ? (todayRentals.find(r => {
+            if (r.status !== "Terkonfirmasi") return false;
+            return (Array.isArray(r.selectedBikes) && r.selectedBikes.length)
+                ? r.selectedBikes.some(sb => String(sb.bikeId) === String(b.id))
+                : String(r.bikeId) === String(b.id);
+        }) || null) : null;
+
+        const schedInfo = activeRental
+            ? getGowesScheduleStatusInfo(activeRental)
+            : nextConfirmed
+                ? getGowesScheduleStatusInfo(nextConfirmed)
+                : { state: b.status === "Servis" ? "service" : "ready", badge: b.status === "Servis" ? "Masa Servis" : "Ready di Garasi", cls: b.status === "Servis" ? "bg-zinc-500/20 text-zinc-400" : "bg-emerald-500/15 text-emerald-600", remainingMins: 999, lateMinutes: 0, billableHours: 0, totalFine: 0, ratePerHour: getBikeLateFeePerHour(b), deadlineLabel: "-" };
+
+        const priorityRank = schedInfo.state === "overdue" ? 0
+            : schedInfo.state === "warning" ? 1
+            : schedInfo.state === "active" ? 2
+            : schedInfo.state === "upcoming" ? 3
+            : schedInfo.state === "ready" ? 4 : 5;
+
+        return { bike: b, activeRental, nextConfirmed, schedInfo, priorityRank };
+    }).sort((a, b) => a.priorityRank - b.priorityRank);
+
+    const cntTotal = liveUnits.length;
+    const cntActive = liveUnits.filter(x => !!x.activeRental).length;
+    const cntOverdue = liveUnits.filter(x => x.schedInfo.state === "overdue").length;
+    const cntWarning = liveUnits.filter(x => x.schedInfo.state === "warning").length;
+    const cntReady = liveUnits.filter(x => !x.activeRental && x.bike.status !== "Servis").length;
+
+    const subEl = document.getElementById("lbm-subtitle");
+    if (subEl) {
+        subEl.innerText = `Hari ini (${todayStr}) • ${cntActive} Jalan • ${cntReady} Ready • ${cntOverdue} Denda`;
+    }
+
+    const filtered = liveUnits.filter(item => {
+        if (_liveBikesFilter === "active") return !!item.activeRental;
+        if (_liveBikesFilter === "warning") return item.schedInfo.state === "warning";
+        if (_liveBikesFilter === "overdue") return item.schedInfo.state === "overdue";
+        if (_liveBikesFilter === "ready") return !item.activeRental && item.bike.status !== "Servis";
+        return true;
+    });
+
+    const filterPills = [
+        { k: "all", l: `Semua (${cntTotal})` },
+        { k: "active", l: `Sedang Jalan (${cntActive})` },
+        { k: "warning", l: `< 15 Mnt / Toleransi (${cntWarning})` },
+        { k: "overdue", l: `Overdue / Denda (${cntOverdue})` },
+        { k: "ready", l: `Ready (${cntReady})` }
+    ];
+
+    box.innerHTML = `
+        <div class="grid grid-cols-2 sm:grid-cols-4 gap-2.5">
+            <div class="app-card border rounded-2xl p-3 text-center shadow-sm">
+                <span class="text-[10px] app-muted font-bold uppercase block">Total Unit</span>
+                <strong class="text-xl font-extrabold block mt-0.5">${cntTotal}</strong>
+            </div>
+            <div class="app-card border rounded-2xl p-3 text-center shadow-sm border-l-4 border-l-blue-500">
+                <span class="text-[10px] app-muted font-bold uppercase block">Sedang Jalan</span>
+                <strong class="text-xl font-extrabold text-blue-600 block mt-0.5">${cntActive}</strong>
+            </div>
+            <div class="app-card border rounded-2xl p-3 text-center shadow-sm border-l-4 border-l-emerald-500">
+                <span class="text-[10px] app-muted font-bold uppercase block">Ready Garasi</span>
+                <strong class="text-xl font-extrabold text-emerald-600 block mt-0.5">${cntReady}</strong>
+            </div>
+            <div class="app-card border rounded-2xl p-3 text-center shadow-sm border-l-4 border-l-red-500">
+                <span class="text-[10px] app-muted font-bold uppercase block">Overdue (Denda)</span>
+                <strong class="text-xl font-extrabold text-red-500 block mt-0.5">${cntOverdue}</strong>
+            </div>
+        </div>
+
+        <div class="flex gap-1.5 overflow-x-auto no-scrollbar pb-0.5">
+            ${filterPills.map(p => `
+                <button type="button" onclick="setLiveBikesFilter('${p.k}')" class="px-3.5 py-1.5 rounded-full text-[11px] font-extrabold whitespace-nowrap transition ${_liveBikesFilter === p.k ? "gowes-pill-btn shadow" : "app-card border app-muted"}">${p.l}</button>
+            `).join("")}
+        </div>
+
+        <div class="space-y-3">
+            ${filtered.length ? filtered.map(({ bike, activeRental, nextConfirmed, schedInfo }) => {
+                const borderCol = schedInfo.state === "overdue"
+                    ? "border-l-red-600"
+                    : schedInfo.state === "warning"
+                        ? "border-l-amber-500"
+                        : activeRental
+                            ? "border-l-blue-500"
+                            : bike.status === "Servis"
+                                ? "border-l-zinc-500"
+                                : "border-l-emerald-500";
+                const brLbl = _getBranchLabelById(bike.branchId);
+                const lateRate = getBikeLateFeePerHour(bike);
+
+                let rentalDetailsHtml = "";
+                let actionsHtml = "";
+
+                if (activeRental) {
+                    const fineLine = schedInfo.totalFine > 0
+                        ? `<div class="rounded-xl px-2.5 py-1.5 bg-red-500/12 border border-red-500/35 text-red-600 text-[11px] font-extrabold flex items-center justify-between gap-2">
+                            <span><i class="fa-solid fa-triangle-exclamation mr-1"></i>Denda Berjalan (${schedInfo.billableHours} Jam × ${fmtRp(lateRate)})</span>
+                            <span>${fmtRp(schedInfo.totalFine)}</span>
+                           </div>`
+                        : (schedInfo.lateMinutes > 0
+                            ? `<div class="rounded-xl px-2.5 py-1.5 bg-amber-400/20 border border-amber-500/40 text-amber-800 text-[10.5px] font-bold">
+                                <i class="fa-solid fa-stopwatch mr-1"></i>Lewat ${schedInfo.lateMinutes} mnt — Masih dalam batas toleransi 20 menit (Rp 0)
+                               </div>`
+                            : "");
+
+                    rentalDetailsHtml = `
+                        <div class="app-card-soft border rounded-2xl p-3 space-y-1.5 text-[11px]">
+                            <div class="flex items-center justify-between gap-2">
+                                <span>Penyewa: <strong>${escHtml(activeRental.customerName || activeRental.customerUsername)}</strong></span>
+                                <span class="font-mono text-[10px] app-muted">${escHtml(activeRental.customerPhone || "-")}</span>
+                            </div>
+                            <div class="flex flex-wrap items-center justify-between gap-2">
+                                <span>Mulai: <strong>${escHtml(activeRental.startDate)} • ${escHtml(activeRental.startTime)} WITA</strong></span>
+                                <span class="text-emerald-600 font-extrabold">Batas Kembali: ${escHtml(schedInfo.deadlineLabel)} WITA</span>
+                            </div>
+                            <div class="flex flex-wrap items-center gap-1.5 pt-0.5">
+                                <span class="text-[10px] px-2 py-0.5 rounded-full app-card border font-semibold">${escHtml(activeRental.durationLabel || "")} (${activeRental.quantity || 1} Unit)</span>
+                                ${activeRental.ktpHeldAtShop ? `<span class="text-[10px] px-2 py-0.5 rounded-full bg-purple-500/15 text-purple-600 font-bold">KTP di Kasir</span>` : ""}
+                                ${typeof formatHandledByBadgeHtml === "function" ? formatHandledByBadgeHtml(activeRental) : ""}
+                            </div>
+                            ${fineLine}
+                        </div>
+                    `;
+                    actionsHtml = `
+                        <div class="flex flex-wrap items-center gap-1.5 pt-1">
+                            <button type="button" onclick="openBikeCheckinModal('${esc(activeRental.id)}')" class="gowes-pill-btn px-3.5 py-2 rounded-xl text-xs shadow flex-1 sm:flex-none"><i class="fa-solid fa-clipboard-check mr-1"></i>Terima Unit</button>
+                            <button type="button" onclick="extendLiveBikeRental('${esc(activeRental.id)}',1,this)" class="px-3 py-2 rounded-xl app-card-soft border border-blue-500/35 text-blue-600 text-xs font-bold">+1 Jam</button>
+                            <button type="button" onclick="sendGowesOverdueReminderWA('${esc(activeRental.id)}')" class="px-3 py-2 rounded-xl ${schedInfo.state === "overdue" ? "bg-red-600 text-white" : "bg-emerald-600/15 text-emerald-700 border border-emerald-500/35"} text-xs font-bold"><i class="fa-brands fa-whatsapp mr-1"></i>WA</button>
+                            <button type="button" onclick="openGowesReceiptModal('${esc(activeRental.id)}')" class="px-3 py-2 rounded-xl app-card-soft border text-xs font-bold"><i class="fa-solid fa-receipt mr-1"></i>Struk</button>
+                        </div>
+                    `;
+                } else if (nextConfirmed) {
+                    rentalDetailsHtml = `
+                        <div class="app-card-soft border rounded-2xl p-2.5 text-[11px] flex flex-wrap items-center justify-between gap-2">
+                            <span>Booking Siap Ambil: <strong>${escHtml(nextConfirmed.customerName || nextConfirmed.customerUsername)}</strong> (${escHtml(nextConfirmed.startTime)} WITA)</span>
+                            <button type="button" onclick="setGowesRentalStatus('${esc(nextConfirmed.id)}','Sedang Digunakan',this)" class="gowes-pill-btn px-3 py-1 rounded-lg text-[10.5px]"><i class="fa-solid fa-key mr-1"></i>Serahkan Unit</button>
+                        </div>
+                    `;
+                }
+
+                return `
+                    <div class="app-card border rounded-3xl p-4 space-y-2.5 shadow-sm border-l-4 ${borderCol}">
+                        <div class="flex items-start gap-3">
+                            <img src="${bike.image || 'https://images.unsplash.com/photo-1485965120184-e220f721d03e?auto=format&fit=crop&w=800&q=75'}" class="w-16 h-12 rounded-xl object-cover bg-black border gold-border shrink-0">
+                            <div class="min-w-0 flex-1 space-y-0.5">
+                                <div class="flex items-center gap-1.5 flex-wrap">
+                                    <span class="text-[9px] px-2 py-0.5 rounded-full border font-extrabold ${schedInfo.cls}">${escHtml(schedInfo.badge)}</span>
+                                    <span class="text-[9px] px-2 py-0.5 rounded-full bg-blue-500/12 text-blue-600 font-bold">${escHtml(brLbl)}</span>
+                                </div>
+                                <h4 class="font-extrabold text-sm truncate pt-0.5">${escHtml(bike.name)}</h4>
+                                <p class="text-[10px] app-muted">Tarif Denda Internal: <strong>${fmtRp(lateRate)}/jam</strong> (toleransi 20 mnt)</p>
+                            </div>
+                        </div>
+                        ${rentalDetailsHtml}
+                        ${actionsHtml}
+                    </div>
+                `;
+            }).join("") : `<div class="app-card border border-dashed rounded-3xl p-8 text-center text-xs app-muted">Tidak ada unit sepeda pada filter ini.</div>`}
+        </div>
+    `;
+}
+
+async function extendLiveBikeRental(rentalId, addHours = 1, btnEl = null) {
+    const r = (db.gowesRentals || []).find(x => String(x.id) === String(rentalId));
+    if (!r) return showToast("Data sewa tidak ditemukan.", "error");
+    const allBikes = Array.isArray(db.gowesBikes) && db.gowesBikes.length ? db.gowesBikes : DEFAULT_GOWES_BIKES;
+    const refBike = allBikes.find(b => String(b.id) === String(r.bikeId)) || null;
+    const rate = getBikeLateFeePerHour(refBike);
+    const qty = Math.max(1, Number(r.quantity || 1));
+    const extraFee = rate * addHours * qty;
+
+    const ok = await showConfirm(
+        `Perpanjang Sewa +${addHours} Jam`,
+        `Tambah durasi +${addHours} jam untuk ${r.customerName || r.customerUsername} (${r.bikeName}) dengan biaya tambahan ${fmtRp(extraFee)}?`,
+        "fa-solid fa-clock",
+        `Ya, Perpanjang (+${fmtRp(extraFee)})`
+    );
+    if (!ok) return;
+
+    if (btnEl) setBtnLoading(btnEl, true, "...");
+    const hbMeta = typeof buildHandledByMeta === "function" ? buildHandledByMeta() : null;
+    const nextExtraHours = Number(r.extraHours || 0) + addHours;
+    const nextExtraFee = Number(r.extraFee || 0) + extraFee;
+    const res = await apiAction({
+        action: "gowes_update_rental_status",
+        rentalId: String(r.id),
+        status: r.status,
+        extraHours: nextExtraHours,
+        extraFee,
+        handledBy: hbMeta
+    });
+    if (btnEl) setBtnLoading(btnEl, false);
+
+    if (res && res.ok && res.rental) {
+        const merged = Object.assign({}, res.rental, { extraHours: nextExtraHours, extraFee: nextExtraFee, totalPrice: Number(r.totalPrice || 0) + extraFee, handledBy: hbMeta });
+        const idx = db.gowesRentals.findIndex(x => String(x.id) === String(r.id));
+        if (idx >= 0) db.gowesRentals[idx] = merged;
+    } else {
+        r.extraHours = nextExtraHours;
+        r.extraFee = nextExtraFee;
+        r.totalPrice = Number(r.totalPrice || 0) + extraFee;
+        r.handledBy = hbMeta;
+    }
+    idbSet("db_snapshot", db);
+    renderLiveBikesMonitorModal();
+    showToast(`Durasi diperpanjang +${addHours} jam (+${fmtRp(extraFee)})!`);
+}
+
+function openBikeCheckinModal(rentalId) {
+    const r = (db.gowesRentals || []).find(x => String(x.id) === String(rentalId));
+    if (!r) return showToast("Data sewa tidak ditemukan.", "error");
+    _activeCheckinRentalId = String(r.id);
+    _checkinReturnPhoto = r.handoverInPhoto || "";
+
+    const info = getGowesScheduleStatusInfo(r);
+    const subEl = document.getElementById("bci-subtitle");
+    if (subEl) subEl.innerText = `${r.bikeName} • ${r.customerName || r.customerUsername}`;
+
+    const bodyEl = document.getElementById("bci-body");
+    if (bodyEl) {
+        const fineBox = info.totalFine > 0
+            ? `<div class="rounded-2xl p-3.5 bg-red-500/12 border-2 border-red-500/45 space-y-2">
+                <div class="flex items-center justify-between gap-2 text-red-600 font-extrabold">
+                    <span><i class="fa-solid fa-triangle-exclamation mr-1"></i>Terlambat ${info.lateMinutes} Menit</span>
+                    <span>Dihitung ${info.billableHours} Jam</span>
+                </div>
+                <p class="text-[11px] app-muted">Aturan toleransi 20 mnt/jam: ${info.billableHours} jam × ${fmtRp(info.ratePerHour)} × ${r.quantity || 1} unit.</p>
+                <div class="flex items-center justify-between gap-2 pt-1">
+                    <label class="font-bold text-xs">Nominal Denda (Rp):</label>
+                    <input type="number" id="bci-fine-amount" value="${info.totalFine}" min="0" step="1000" class="app-input !w-36 !py-1.5 text-right font-extrabold text-red-600">
+                </div>
+                <div class="grid grid-cols-2 gap-2 pt-1">
+                    <label class="cursor-pointer"><input type="radio" name="bci_fine_pay" value="cash" checked class="hide peer"><div class="app-card border rounded-xl py-2 text-center font-bold peer-checked:border-emerald-500 peer-checked:bg-emerald-500/12">Denda Cash</div></label>
+                    <label class="cursor-pointer"><input type="radio" name="bci_fine_pay" value="qris" class="hide peer"><div class="app-card border rounded-xl py-2 text-center font-bold peer-checked:border-blue-500 peer-checked:bg-blue-500/12">Denda QRIS</div></label>
+                </div>
+               </div>`
+            : `<div class="rounded-2xl p-3.5 bg-emerald-500/12 border border-emerald-500/35 text-emerald-700 font-bold space-y-1">
+                <div><i class="fa-solid fa-circle-check mr-1"></i>${info.lateMinutes > 0 ? `Lewat ${info.lateMinutes} menit (Masih dalam toleransi 20 mnt — Bebas Denda)` : "Dikembalikan Tepat Waktu — Tidak Ada Denda"}</div>
+                <input type="hidden" id="bci-fine-amount" value="0">
+               </div>`;
+
+        bodyEl.innerHTML = `
+            ${fineBox}
+            <div class="app-card-soft border rounded-2xl p-3.5 space-y-2">
+                <span class="text-[10.5px] font-extrabold uppercase app-accent block">Checklist Kondisi Pengembalian</span>
+                <label class="flex items-center gap-2.5 cursor-pointer font-semibold"><input type="checkbox" id="bci-chk-helm" checked class="w-4 h-4 accent-emerald-600"> Helm lengkap &amp; utuh</label>
+                <label class="flex items-center gap-2.5 cursor-pointer font-semibold"><input type="checkbox" id="bci-chk-lock" checked class="w-4 h-4 accent-emerald-600"> Kunci spiral / aksesoris lengkap</label>
+                <label class="flex items-center gap-2.5 cursor-pointer font-semibold"><input type="checkbox" id="bci-chk-mech" checked class="w-4 h-4 accent-emerald-600"> Rem, rantai &amp; rangka normal</label>
+                ${r.ktpHeldAtShop ? `<label class="flex items-center gap-2.5 cursor-pointer font-bold text-purple-600 pt-1 border-t gold-border"><input type="checkbox" id="bci-chk-ktp" checked class="w-4 h-4 accent-purple-600"> Jaminan KTP/SIM fisik sudah dikembalikan ke penyewa</label>` : ""}
+            </div>
+            <div class="app-card-soft border rounded-2xl p-3 text-center space-y-2">
+                <span class="text-[10px] font-bold uppercase app-muted block">Foto Kondisi Kembali (Opsional)</span>
+                <img id="bci-photo-prev" src="${_checkinReturnPhoto}" class="${_checkinReturnPhoto ? "" : "hide"} w-full h-32 object-contain rounded-xl bg-black border gold-border">
+                <label class="block app-card border gold-border app-accent py-2 rounded-xl text-xs font-bold cursor-pointer">
+                    <i class="fa-solid fa-camera mr-1"></i>Ambil / Pilih Foto Pengembalian
+                    <input type="file" accept="image/*" capture="environment" class="hide" onchange="pickBikeCheckinPhoto(this)">
+                </label>
+            </div>
+        `;
+    }
+
+    document.getElementById("modal-bike-checkin")?.classList.remove("hide");
+    if (typeof mrNavPush === "function") mrNavPush({ type: "modal", id: "modal-bike-checkin" });
+}
+
+function closeBikeCheckinModal() {
+    _activeCheckinRentalId = "";
+    _checkinReturnPhoto = "";
+    document.getElementById("modal-bike-checkin")?.classList.add("hide");
+    if (typeof _mrDropTopModalById === "function") _mrDropTopModalById("modal-bike-checkin");
+}
+
+async function pickBikeCheckinPhoto(inp) {
+    const file = inp.files && inp.files[0];
+    if (!file) return;
+    inp.value = "";
+    showLoading("Memproses foto...");
+    _checkinReturnPhoto = await quickResizeImage(file, 820, 0.80);
+    hideLoading();
+    const prev = document.getElementById("bci-photo-prev");
+    if (prev) { prev.src = _checkinReturnPhoto; prev.classList.remove("hide"); }
+}
+
+async function confirmBikeCheckinSubmit() {
+    const r = (db.gowesRentals || []).find(x => String(x.id) === String(_activeCheckinRentalId));
+    if (!r) return;
+
+    const info = getGowesScheduleStatusInfo(r);
+    const lateFee = Math.max(0, Math.round(Number(document.getElementById("bci-fine-amount")?.value || 0)));
+    const latePayMethod = document.querySelector('input[name="bci_fine_pay"]:checked')?.value || "cash";
+    const checklist = {
+        helmOk: !!document.getElementById("bci-chk-helm")?.checked,
+        lockOk: !!document.getElementById("bci-chk-lock")?.checked,
+        mechOk: !!document.getElementById("bci-chk-mech")?.checked,
+        ktpReturned: !!document.getElementById("bci-chk-ktp")?.checked
+    };
+    const hbMeta = typeof buildHandledByMeta === "function" ? buildHandledByMeta() : null;
+
+    setBtnLoading("btn-confirm-bike-checkin", true, "Menyelesaikan...");
+    if (_checkinReturnPhoto && _checkinReturnPhoto.startsWith("data:")) {
+        await apiAction({ action: "gowes_record_handover", rentalId: String(r.id), stage: "in", photo: _checkinReturnPhoto });
+    }
+    const res = await apiAction({
+        action: "gowes_update_rental_status",
+        rentalId: String(r.id),
+        status: "Selesai",
+        lateFee,
+        lateHours: lateFee > 0 ? Math.max(1, info.billableHours) : 0,
+        latePaymentMethod: lateFee > 0 ? latePayMethod : "",
+        checkinChecklist: checklist,
+        handledBy: hbMeta
+    });
+    setBtnLoading("btn-confirm-bike-checkin", false);
+
+    if (!res || !res.ok) {
+        return showToast((res && res.message) || "Gagal menyelesaikan pengembalian unit.", "error");
+    }
+
+    const updatedRental = Object.assign({}, r, res.rental || {}, {
+        status: "Selesai",
+        lateFee,
+        lateHours: lateFee > 0 ? Math.max(1, info.billableHours) : 0,
+        latePaymentMethod: lateFee > 0 ? latePayMethod : "",
+        checkinChecklist: checklist,
+        handoverInPhoto: _checkinReturnPhoto || r.handoverInPhoto || "",
+        handledBy: hbMeta || r.handledBy,
+        completedAt: Date.now()
+    });
+    const idx = db.gowesRentals.findIndex(x => String(x.id) === String(r.id));
+    if (idx >= 0) db.gowesRentals[idx] = updatedRental;
+
+    const affectedIds = (Array.isArray(updatedRental.selectedBikes) && updatedRental.selectedBikes.length)
+        ? updatedRental.selectedBikes.map(sb => String(sb.bikeId))
+        : [String(updatedRental.bikeId)];
+    if (Array.isArray(db.gowesBikes)) {
+        db.gowesBikes.forEach(b => { if (affectedIds.includes(String(b.id))) b.status = "Tersedia"; });
+    }
+    idbSet("db_snapshot", db);
+
+    closeBikeCheckinModal();
+    if (!document.getElementById("modal-live-bikes-monitor")?.classList.contains("hide")) {
+        renderLiveBikesMonitorModal();
+    }
+    if (typeof refreshAfterAdminOrderAction === "function") {
+        refreshAfterAdminOrderAction(lateFee > 0 ? `Unit selesai + Denda ${fmtRp(lateFee)} dicatat!` : "Unit diterima & kembali Ready!");
+    }
+    openGowesReceiptModal(updatedRental);
 }

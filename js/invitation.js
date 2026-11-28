@@ -520,9 +520,17 @@ function autoFillDemoData() {
 function openEditInvitation(invId, isAdminDirect = false) {
     const inv = db.invitations.find(i => String(i.id) === String(invId));
     if (!inv) return showToast("Undangan tidak ditemukan.", "error");
-    if (!isAdminDirect) {
-        if (inv.status !== "Aktif") return showToast("Undangan baru bisa direvisi setelah disetujui Admin.", "error");
-        if ((inv.editCount || 0) >= 2) return showToast("Kuota revisi maksimal (2 kali) sudah habis.", "error");
+    const curU = typeof getCurrentUserObj === "function" ? getCurrentUserObj() : null;
+    const isStaffDirect = !!(isAdminDirect && curU && (curU.role === "master" || curU.role === "administrasi"));
+    const isCabangDirect = !!(isAdminDirect && curU && curU.role === "cabang");
+    const editRule = typeof getProjectEditRuleInfo === "function" ? getProjectEditRuleInfo(inv, isCabangDirect) : { isExpired: false, editsLeft: 2 - (inv.editCount || 0) };
+
+    if (!isStaffDirect) {
+        if (editRule.isExpired) return showToast("Masa edit undangan (maksimal 3 minggu / 21 hari) sudah habis.", "error");
+        if (!isCabangDirect) {
+            if (inv.status !== "Aktif") return showToast("Undangan baru bisa direvisi setelah disetujui Admin.", "error");
+            if (editRule.editsLeft <= 0) return showToast("Kuota revisi maksimal (2 kali) sudah habis.", "error");
+        }
     }
     currentViewName = "wizard";
     wizardState = {

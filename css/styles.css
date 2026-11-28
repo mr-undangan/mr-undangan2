@@ -1,5 +1,5 @@
 /* =========================================================================
-   LEMBARKU & TITIK GOWES — STYLESHEET RESMI (V14.9)
+   LEMBARKU & TITIK GOWES — STYLESHEET RESMI (V14.10)
    File: css/styles.css
    ========================================================================= */
 
@@ -558,7 +558,7 @@ body {
 .hide { display: none !important; }
 
 /* =========================================================================
-   TITIK GOWES — MODULAR EXTENSION STYLES (SAFE APPEND V14.9)
+   TITIK GOWES — MODULAR EXTENSION STYLES (SAFE APPEND V14.10)
    ========================================================================= */
 
 /* 1. Tombol Garis 2 Threads di Sisi Kiri Header (Hanya di Beranda) */
@@ -860,7 +860,7 @@ body.in-home.mode-gowes main {
     box-shadow: 0 4px 12px rgba(5, 150, 105, 0.28);
 }
 
-/* 8. V14.9 — Kartu Peta Google Maps Elegan & Banner Tipografi Promosi */
+/* 8. V14.10 — Kartu Peta Google Maps Elegan & Banner Tipografi Promosi */
 .gowes-map-card-frame {
     position: relative;
     width: 100%;
@@ -900,7 +900,7 @@ body.in-home.mode-gowes main {
     text-shadow: 0 2px 12px rgba(0, 0, 0, 0.72);
 }
 
-/* 9. V14.9 — Dropdown Pemilih Cabang Memanjang & Pemilih Sepeda Bergambar */
+/* 9. V14.10 — Dropdown Pemilih Cabang Memanjang & Pemilih Sepeda Bergambar */
 .gowes-branch-select-btn {
     width: 100%;
     display: flex;
@@ -961,7 +961,7 @@ body.in-home.mode-gowes main {
     -webkit-overflow-scrolling: touch;
 }
 
-/* 10. V14.9 — Peringatan Bentrok Booking, Indikator Overdue & Kasir Offline */
+/* 10. V14.10 — Peringatan Bentrok Booking, Indikator Overdue & Kasir Offline */
 .gowes-conflict-alert {
     border-radius: 1rem;
     background: rgba(239, 68, 68, 0.12);
@@ -997,7 +997,7 @@ html[data-app-theme="black"] .gowes-conflict-alert {
 }
 
 /* =========================================================================
-   V14.9 — SMART PORTRAIT FRAMING, SELECTIVE PINCH ZOOM & RESPONSIVE PC/TABLET/MOBILE
+   V14.10 — SMART PORTRAIT FRAMING, SELECTIVE PINCH ZOOM & RESPONSIVE PC/TABLET/MOBILE
    ========================================================================= */
 
 /* 1. Smart Framing Kepala Otomatis (Default Atas Wajah 50% 18%) */
@@ -1099,7 +1099,7 @@ html[data-app-theme="black"] .gowes-conflict-alert {
 }
 
 /* =========================================================================
-   V14.9 — LUXURY GOLD LEMBARKU COIN EMBLEM
+   V14.10 — LUXURY GOLD LEMBARKU COIN EMBLEM
    ========================================================================= */
 .lbk-gold-coin {
     position: relative;
@@ -1183,7 +1183,7 @@ html[data-app-theme="black"] .gowes-conflict-alert {
 }
 
 /* =========================================================================
-   V14.9 — USER PRO FLOATING COVER COIN PILL & GOWES TODAY SCHEDULE BOARD
+   V14.10 — USER PRO FLOATING COVER COIN PILL & GOWES TODAY SCHEDULE BOARD
    ========================================================================= */
 .prof-pro-coin-pill {
     position: absolute;
@@ -1235,7 +1235,7 @@ html[data-app-theme="black"] .gowes-conflict-alert {
 }
 
 /* =========================================================================
-   V14.9 — GREEN ONLINE PRESENCE DOT
+   V14.10 — GREEN ONLINE PRESENCE DOT
    ========================================================================= */
 .lbk-online-dot {
     position: absolute;
@@ -1262,4 +1262,59 @@ html[data-app-theme="black"] .gowes-conflict-alert {
     bottom: 2px;
     right: 2px;
     border-width: 2.5px;
+}
+
+/* =========================================================================
+   V14.10 — PRINT STRUK UNIVERSAL (THERMAL & A4) + 4-CORNER DOC SCANNER
+   ========================================================================= */
+#receipt-print-sheet {
+    display: none;
+}
+
+@media print {
+    body.printing-receipt * {
+        visibility: hidden !important;
+    }
+    body.printing-receipt #receipt-print-sheet,
+    body.printing-receipt #receipt-print-sheet * {
+        visibility: visible !important;
+    }
+    body.printing-receipt #receipt-print-sheet {
+        display: block !important;
+        position: fixed !important;
+        left: 0 !important;
+        top: 0 !important;
+        width: 100% !important;
+        max-width: 80mm !important;
+        margin: 0 auto !important;
+        padding: 4mm !important;
+        background: #ffffff !important;
+        color: #000000 !important;
+        font-family: 'Plus Jakarta Sans', Arial, sans-serif !important;
+        font-size: 11px !important;
+        line-height: 1.4 !important;
+        box-shadow: none !important;
+        border: none !important;
+    }
+}
+
+.doc-scan-canvas-wrap {
+    position: relative;
+    width: 100%;
+    max-height: 56vh;
+    background: #09090b;
+    border-radius: 1rem;
+    overflow: hidden;
+    touch-action: none;
+    user-select: none;
+    -webkit-user-select: none;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+.doc-scan-canvas-wrap canvas {
+    display: block;
+    max-width: 100%;
+    max-height: 56vh;
+    touch-action: none;
 }

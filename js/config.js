@@ -1,6 +1,6 @@
 // =========================================================================
 // LEMBARKU & TITIK GOWES — CORE CONFIG, CATALOGS & SHARED ENGINE (js/config.js)
-// Versi: V14.9 (Armada Per Gerai, Konten & Media Beranda, Share Contoh, Auto-Frame Kepala & Anti-Zoom UI)
+// Versi: V14.10 (Privasi Permanen, Kunci Edit 3 Mgg + Add-On CV, Scanner Warna 4-Sudut, Live Sepeda + Denda 20m, Struk Print/WA & Chat Privat Master)
 // =========================================================================
 const CLOUD_API_URL = "https://script.google.com/macros/s/AKfycbyHsITJ02tiA59p0QIXkOQaO3VnBFQmDBp-7iUHcUkmrYjlOtRVwxhlGZCzL4RLKKNW/exec";
 const FOUNDER_USERNAME = "kausar.af";
@@ -368,6 +368,7 @@ const DEFAULT_GOWES_BIKES = [
         price2Hours: 40000,
         price6Hours: 75000,
         priceFullDay: 120000,
+        lateFeePerHour: 15000,
         status: "Tersedia",
         description: "Suspensi empuk air fork, rem hidrolik pakem, sangat tangguh untuk rute aspal maupun tanah berkerikil.",
         freeAccessories: ["Helm Sepeda", "Kunci Gembok Spiral", "Lampu Malam Depan/Belakang"],
@@ -389,6 +390,7 @@ const DEFAULT_GOWES_BIKES = [
         price2Hours: 50000,
         price6Hours: 95000,
         priceFullDay: 150000,
+        lateFeePerHour: 20000,
         status: "Tersedia",
         description: "Bobot alloy super ringan, posisi aerodinamis mantap untuk latihan kecepatan dan endurance keliling kota.",
         freeAccessories: ["Helm Aero", "Pompa Mini Portabel", "Bottle Cage"],
@@ -410,6 +412,7 @@ const DEFAULT_GOWES_BIKES = [
         price2Hours: 35000,
         price6Hours: 60000,
         priceFullDay: 90000,
+        lateFeePerHour: 12000,
         status: "Tersedia",
         description: "Sangat ringkas dan elegan, mudah dilipat ke bagasi mobil, cocok untuk Car Free Day santai keluarga.",
         freeAccessories: ["Helm Casual", "Tas Stang Depan", "Kunci Gembok"],
@@ -431,6 +434,7 @@ const DEFAULT_GOWES_BIKES = [
         price2Hours: 45000,
         price6Hours: 85000,
         priceFullDay: 135000,
+        lateFeePerHour: 15000,
         status: "Tersedia",
         description: "Full suspension (dual suspension) empuk, sangat stabil meredam getaran jalan berlubang atau tanjakan curam.",
         freeAccessories: ["Helm Trail", "Kunci Spiral", "Lampu Malam"],
@@ -760,8 +764,30 @@ function getCurrentUserObj() {
         || null;
 }
 
+function _getLocalPrivacyCache(username) {
+    const k = String(username || "").trim().toLowerCase();
+    if (!k) return null;
+    try {
+        const obj = JSON.parse(localStorage.getItem("LBK_USER_PRIVACY_" + k) || "null");
+        return (obj && typeof obj === "object") ? obj : null;
+    } catch { return null; }
+}
+
+function _saveLocalPrivacyCache(username, privacyObj) {
+    const k = String(username || "").trim().toLowerCase();
+    if (!k || !privacyObj || typeof privacyObj !== "object") return;
+    try {
+        localStorage.setItem("LBK_USER_PRIVACY_" + k, JSON.stringify(privacyObj));
+    } catch {}
+}
+
 function getUserPrivacy(uObj) {
-    const raw = (uObj && uObj.privacy && typeof uObj.privacy === "object") ? uObj.privacy : {};
+    const serverRaw = (uObj && uObj.privacy && typeof uObj.privacy === "object") ? uObj.privacy : {};
+    const uname = uObj && uObj.username ? String(uObj.username).trim().toLowerCase() : "";
+    const curKey = currentSessionUser ? String(currentSessionUser).trim().toLowerCase() : "";
+    // Gabungkan cache lokal khusus milik akun yang sedang login agar field privasi baru tidak pernah ter-reset oleh server lama
+    const localRaw = (uname && curKey && uname === curKey) ? (_getLocalPrivacyCache(uname) || {}) : {};
+    const raw = Object.assign({}, serverRaw, localRaw);
     return {
         showProjects: raw.showProjects !== false,
         showFollowers: raw.showFollowers !== false,
@@ -978,7 +1004,104 @@ function evaluateVoucherCode(rawCode, scope, basePrice) {
 
 function isSystemCoinOrder(doc) {
     if (!doc) return false;
-    return doc.docType === "coin_topup" || doc.docType === "pro_upgrade";
+    return doc.docType === "coin_topup" || doc.docType === "pro_upgrade" || doc.docType === "cv_edit_addon";
+}
+
+// ================= PERBAIKAN 2: ATURAN EDIT 3 MINGGU (UNDANGAN/LAMARAN) & ADD-ON +2X EDIT CV =================
+const PROJECT_EDIT_WINDOW_DAYS = 21; // 3 Minggu
+
+function getProjectEditRuleInfo(doc, isCabangOwner = false) {
+    if (!doc) {
+        return { isCv: false, isExpired: true, daysLeft: 0, maxEdits: 2, editCount: 0, editsLeft: 0, canEdit: false, canBuyCvAddon: false, addonHalfPrice: 10000 };
+    }
+    const isPf = doc._kind === "pf" || doc.docType === "cv" || doc.docType === "lamaran";
+    const isCv = isPf && doc.docType !== "lamaran";
+    const isAktif = doc.status === "Aktif";
+    const editCount = Math.max(0, Number(doc.editCount || 0));
+    const maxEdits = Math.max(2, Number(doc.maxEdits || 2));
+    const editsLeft = Math.max(0, maxEdits - editCount);
+
+    const createdTs = Number(doc.createdAt || doc.id || Date.now());
+    const elapsedMs = Math.max(0, Date.now() - createdTs);
+    const limitMs = PROJECT_EDIT_WINDOW_DAYS * 86400000;
+    const isExpired = !isCv && (elapsedMs > limitMs);
+    const daysLeft = isCv ? 999 : Math.max(0, Math.ceil((limitMs - elapsedMs) / 86400000));
+
+    const canEdit = isExpired ? false : (isCabangOwner ? true : (isAktif && editsLeft > 0));
+    const basePrice = Number(doc.price || (isCv ? 20000 : 15000));
+    const addonHalfPrice = Math.max(1000, Math.round(basePrice * 0.5));
+    const canBuyCvAddon = isCv && isAktif && !isCabangOwner && editsLeft <= 0;
+
+    return {
+        isCv,
+        isExpired,
+        daysLeft,
+        maxEdits,
+        editCount,
+        editsLeft,
+        canEdit,
+        canBuyCvAddon,
+        addonHalfPrice
+    };
+}
+
+// ================= PERBAIKAN 4: HITUNG DENDA TOLERANSI 20 MENIT PER JAM =================
+const GOWES_LATE_TOLERANCE_MINS = 20;
+const DEFAULT_GOWES_LATE_FEE_PER_HOUR = 15000;
+
+function getBikeLateFeePerHour(bikeOrId) {
+    let bike = (typeof bikeOrId === "object" && bikeOrId) ? bikeOrId : null;
+    if (!bike && bikeOrId) {
+        const list = Array.isArray(db.gowesBikes) && db.gowesBikes.length ? db.gowesBikes : DEFAULT_GOWES_BIKES;
+        bike = list.find(b => String(b.id) === String(bikeOrId)) || null;
+    }
+    const val = Number(bike && bike.lateFeePerHour);
+    return (!isNaN(val) && val > 0) ? Math.round(val) : DEFAULT_GOWES_LATE_FEE_PER_HOUR;
+}
+
+function calculateGowesLateFee(lateMinutes, bikeOrRate = null, qty = 1) {
+    const mins = Math.max(0, Math.floor(Number(lateMinutes || 0)));
+    const rate = typeof bikeOrRate === "number"
+        ? Math.max(0, Math.round(bikeOrRate))
+        : getBikeLateFeePerHour(bikeOrRate);
+    const unitQty = Math.max(1, Math.round(Number(qty || 1)));
+    // Toleransi 20 menit per jam: 0-20 mnt = 0 jam; 21-80 mnt (01:20) = 1 jam; 81-140 mnt (01:21-02:20) = 2 jam
+    if (mins <= GOWES_LATE_TOLERANCE_MINS) {
+        return { lateMinutes: mins, billableHours: 0, ratePerHour: rate, totalFine: 0, withinTolerance: mins > 0 };
+    }
+    const billableHours = Math.ceil((mins - GOWES_LATE_TOLERANCE_MINS) / 60);
+    return {
+        lateMinutes: mins,
+        billableHours,
+        ratePerHour: rate,
+        totalFine: billableHours * rate * unitQty,
+        withinTolerance: false
+    };
+}
+
+// ================= PERBAIKAN 5: METADATA PETUGAS PENANGANAN TRANSAKSI (handledBy) =================
+function buildHandledByMeta() {
+    const u = typeof getCurrentUserObj === "function" ? getCurrentUserObj() : null;
+    if (!u || !u.username) return null;
+    return {
+        username: String(u.username).trim().toLowerCase(),
+        name: u.name || u.username,
+        role: u.role || "administrasi",
+        at: Date.now()
+    };
+}
+
+function formatHandledByBadgeHtml(item) {
+    const hb = item && item.handledBy;
+    const fallbackName = item && item.cashierName;
+    if (!hb && !fallbackName) return "";
+    const nameStr = (hb && hb.name) || fallbackName || "-";
+    const userStr = (hb && hb.username) ? ` (@${hb.username})` : "";
+    const roleTag = (hb && hb.role === "master") ? "Founder" : "Admin";
+    const dtStr = (hb && hb.at)
+        ? " • " + new Date(Number(hb.at)).toLocaleDateString("id-ID", { day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit" })
+        : "";
+    return `<span class="inline-flex items-center gap-1 text-[9.5px] px-2 py-0.5 rounded-full bg-indigo-500/12 text-indigo-600 font-bold"><i class="fa-solid fa-user-check text-[8.5px]"></i>${roleTag}: ${escHtml(nameStr + userStr)}${escHtml(dtStr)}</span>`;
 }
 
 function getCoinHistoryForUser(uObj) {
@@ -1314,6 +1437,14 @@ function applyServerDb(data) {
     ["users", "invitations", "portfolios", "chats", "adminLogs"].forEach(k => {
         if (Array.isArray(data[k])) db[k] = data[k];
     });
+    if (currentSessionUser && Array.isArray(db.users)) {
+        const curKey = String(currentSessionUser).trim().toLowerCase();
+        const savedPriv = _getLocalPrivacyCache(curKey);
+        if (savedPriv) {
+            const me = db.users.find(u => u && String(u.username || "").trim().toLowerCase() === curKey);
+            if (me) me.privacy = Object.assign({}, me.privacy || {}, savedPriv);
+        }
+    }
     if (data.appStats && typeof data.appStats === "object") {
         db.appStats = data.appStats;
     }

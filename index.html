@@ -681,6 +681,7 @@
                 </div>
                 <div class="flex flex-wrap gap-2">
                     <button type="button" onclick="openGowesOfflinePosModal()" class="gowes-pill-btn px-3.5 py-2 rounded-xl text-xs shadow-sm"><i class="fa-solid fa-cash-register mr-1.5"></i>Sewa Offline</button>
+                    <button type="button" onclick="openLiveBikesMonitorModal()" class="px-3.5 py-2 rounded-xl bg-emerald-600/15 border border-emerald-500/35 text-emerald-700 text-xs font-extrabold"><i class="fa-solid fa-satellite-dish mr-1.5"></i>Live Sepeda</button>
                     <button type="button" onclick="openMasterWorkspace('overview')" class="px-3.5 py-2 rounded-xl app-card-soft border gold-border app-accent text-xs font-bold"><i class="fa-solid fa-chart-line mr-1.5"></i>Analitik</button>
                     <button type="button" onclick="openFullChatOverlay()" class="gold-pill-btn px-3.5 py-2 rounded-xl text-xs"><i class="fa-solid fa-comments mr-1.5"></i>Live Chat</button>
                 </div>
@@ -702,7 +703,7 @@
                 </div>
                 <div class="flex gap-2">
                     <button type="button" onclick="openGowesOfflinePosModal()" class="gowes-pill-btn px-4 py-2.5 rounded-xl text-xs shadow-sm"><i class="fa-solid fa-cash-register mr-1.5"></i>+ Sewa Offline (Kasir)</button>
-                    <button type="button" onclick="openFullChatOverlay()" class="gold-pill-btn px-4 py-2.5 rounded-xl text-xs relative"><i class="fa-solid fa-comments mr-1.5"></i>Buka Live Chat <span id="staff-chat-pill-cnt" class="hide ml-1 px-1.5 py-0.2 rounded-full bg-red-600 text-white text-[10px]">0</span></button>
+                    <button type="button" onclick="openLiveBikesMonitorModal()" class="gold-pill-btn px-4 py-2.5 rounded-xl text-xs relative"><i class="fa-solid fa-satellite-dish mr-1.5"></i>Data Live Sepeda <span id="staff-live-bikes-cnt" class="hide ml-1 px-1.5 py-0.2 rounded-full bg-red-600 text-white text-[10px]">0</span></button>
                 </div>
             </div>
 
@@ -1183,7 +1184,7 @@
             </div>
 
             <div class="p-4 border-t gold-border text-center text-[10px] app-muted">
-                Versi V14.9 • Terintegrasi Penuh
+                Versi V14.10 • Terintegrasi Penuh
             </div>
         </div>
     </div>
@@ -1323,6 +1324,16 @@
                         <button type="button" id="btn-gw-clear-voucher" onclick="clearGowesBookingVoucher()" class="hide px-3 py-2 rounded-xl bg-red-600/15 text-red-500 text-xs font-bold shrink-0"><i class="fa-solid fa-xmark"></i></button>
                     </div>
                     <p id="gw-book-voucher-status" class="hide text-[11px] font-semibold"></p>
+                </div>
+
+                <!-- Penjelasan Aturan Waktu & Toleransi 20 Menit -->
+                <div class="rounded-2xl p-3.5 bg-amber-500/10 border border-amber-500/40 text-[11px] space-y-1 leading-relaxed">
+                    <strong class="text-amber-700 dark:text-amber-400 flex items-center gap-1.5 text-xs"><i class="fa-solid fa-stopwatch"></i>Ketentuan Waktu &amp; Toleransi Pengembalian</strong>
+                    <ul class="list-disc pl-4 space-y-0.5 app-muted">
+                        <li>Batas toleransi pengembalian adalah <strong>20 menit</strong> di setiap jamnya.</li>
+                        <li>Lewat <strong>21 menit</strong> (s/d 01:20) terhitung denda keterlambatan <strong>1 jam</strong>.</li>
+                        <li>Lewat <strong>01:21</strong> (1 jam 21 menit) baru terhitung <strong>2 jam</strong>, dan seterusnya kelipatan per jam.</li>
+                    </ul>
                 </div>
 
                 <!-- Total Kalkulasi -->
@@ -1503,6 +1514,15 @@
                             <input type="number" id="mgb-pfullday" value="120000" step="5000" class="app-input !py-1.5 font-bold text-center" required>
                         </div>
                     </div>
+                </div>
+
+                <div class="app-card-soft border border-amber-500/35 rounded-2xl p-3 space-y-1.5">
+                    <div class="flex items-center justify-between gap-2">
+                        <label class="app-label !mb-0 text-amber-600"><i class="fa-solid fa-clock-rotate-left mr-1"></i>Denda Keterlambatan / Jam (Internal)</label>
+                        <span class="text-[9px] px-2 py-0.5 rounded-full bg-amber-500/15 text-amber-600 font-bold">Toleransi 20 mnt</span>
+                    </div>
+                    <input type="number" id="mgb-late-fee" value="15000" step="1000" min="0" placeholder="15000" class="app-input !py-1.5 font-extrabold text-amber-600">
+                    <p class="text-[10px] app-muted">Hanya dipakai untuk hitung denda otomatis (lewat 21 mnt = 1 jam, 01:21 = 2 jam). Tidak ditampilkan di banner promosi.</p>
                 </div>
 
                 <div class="grid grid-cols-2 gap-2.5">
@@ -1766,21 +1786,122 @@
     <!-- ========================================================= -->
     <!-- MODAL STRUK DIGITAL & KIRIM WA PELANGGAN                  -->
     <!-- ========================================================= -->
-    <div id="modal-gowes-receipt" class="hide fixed inset-0 z-[147] bg-black/85 backdrop-blur-sm flex items-center justify-center p-4">
-        <div class="app-card border rounded-3xl max-w-sm w-full overflow-hidden shadow-2xl">
-            <div class="px-5 py-3.5 bg-emerald-600 text-white flex items-center justify-between">
-                <div class="flex items-center gap-2">
+    <div id="modal-gowes-receipt" class="hide fixed inset-0 z-[153] bg-black/85 backdrop-blur-sm flex items-center justify-center p-4" onclick="if(event.target===this)closeGowesReceiptModal()">
+        <div class="app-card border rounded-3xl max-w-sm w-full overflow-hidden shadow-2xl flex flex-col max-h-[92vh]" onclick="event.stopPropagation()">
+            <div id="gw-receipt-topbar" class="px-5 py-3.5 bg-emerald-600 text-white flex items-center justify-between shrink-0">
+                <div class="flex items-center gap-2 min-w-0">
                     <i class="fa-solid fa-receipt text-base"></i>
-                    <strong class="text-sm font-extrabold">Struk Sewa Titik Gowes</strong>
+                    <strong id="gw-receipt-topbar-title" class="text-sm font-extrabold truncate">Struk Transaksi Resmi</strong>
                 </div>
-                <button type="button" onclick="closeGowesReceiptModal()" class="w-7 h-7 rounded-full bg-white/20 text-white flex items-center justify-center text-xs"><i class="fa-solid fa-xmark"></i></button>
+                <button type="button" onclick="closeGowesReceiptModal()" class="w-7 h-7 rounded-full bg-white/20 text-white flex items-center justify-center text-xs shrink-0"><i class="fa-solid fa-xmark"></i></button>
             </div>
-            <div id="gw-receipt-body" class="p-5 space-y-3 text-xs"></div>
-            <div class="px-5 py-3.5 border-t gold-border flex gap-2">
-                <button type="button" onclick="closeGowesReceiptModal()" class="px-4 py-2.5 rounded-xl app-btn-sec text-xs font-bold">Selesai</button>
-                <button type="button" onclick="sendActiveGowesReceiptWA()" class="flex-1 bg-emerald-600 hover:bg-emerald-500 text-white py-2.5 rounded-xl text-xs font-extrabold shadow flex items-center justify-center gap-1.5">
-                    <i class="fa-brands fa-whatsapp text-sm"></i> Kirim Struk ke WA
+            <div id="gw-receipt-body" class="p-5 space-y-3 text-xs overflow-y-auto flex-1"></div>
+            <div class="px-4 py-3.5 border-t gold-border space-y-2 shrink-0">
+                <div class="grid grid-cols-2 gap-2">
+                    <button type="button" onclick="printActiveUniversalReceipt()" class="py-2.5 rounded-xl app-card-soft border gold-border app-accent text-xs font-extrabold flex items-center justify-center gap-1.5">
+                        <i class="fa-solid fa-print"></i> Cetak / Print
+                    </button>
+                    <button type="button" onclick="sendActiveGowesReceiptWA()" class="bg-emerald-600 hover:bg-emerald-500 text-white py-2.5 rounded-xl text-xs font-extrabold shadow flex items-center justify-center gap-1.5">
+                        <i class="fa-brands fa-whatsapp text-sm"></i> Kirim WA
+                    </button>
+                </div>
+                <div class="grid grid-cols-2 gap-2">
+                    <button type="button" onclick="copyActiveReceiptText()" class="py-2 rounded-xl app-btn-sec text-[11px] font-bold flex items-center justify-center gap-1.5">
+                        <i class="fa-regular fa-copy"></i> Salin Teks
+                    </button>
+                    <button type="button" onclick="closeGowesReceiptModal()" class="py-2 rounded-xl app-btn-sec text-[11px] font-bold">Selesai</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- MODAL DATA LIVE SEPEDA (ADMINISTRASI & FOUNDER) -->
+    <div id="modal-live-bikes-monitor" class="hide fixed inset-0 z-[138] bg-[var(--app-bg)] flex flex-col overflow-hidden">
+        <div class="lbk-fs-header px-4 sm:px-6 py-3.5 flex items-center justify-between gap-3 shrink-0">
+            <div class="flex items-center gap-2.5 min-w-0">
+                <button type="button" onclick="closeLiveBikesMonitorModal()" class="w-9 h-9 rounded-full app-btn-sec flex items-center justify-center text-xs shrink-0 active:scale-95 transition" title="Kembali">
+                    <i class="fa-solid fa-chevron-left"></i>
                 </button>
+                <div class="min-w-0">
+                    <h3 class="font-extrabold text-base sm:text-lg truncate flex items-center gap-1.5"><span class="w-2.5 h-2.5 rounded-full bg-emerald-500 animate-pulse"></span>Data Live Sepeda</h3>
+                    <p id="lbm-subtitle" class="text-[10px] app-muted truncate">Pemantauan armada real-time • Toleransi 20 menit</p>
+                </div>
+            </div>
+            <div class="flex items-center gap-1.5 shrink-0">
+                <button type="button" onclick="refreshLiveBikesMonitor(true)" class="w-9 h-9 rounded-full app-card-soft border gold-border app-accent flex items-center justify-center text-xs" title="Muat Ulang Data Live"><i class="fa-solid fa-rotate"></i></button>
+                <button type="button" onclick="if(typeof openGowesOfflinePosModal==='function')openGowesOfflinePosModal()" class="gowes-pill-btn px-3 py-1.5 rounded-full text-[11px] shadow">+ Kasir</button>
+            </div>
+        </div>
+        <div class="lbk-fs-scroll">
+            <div id="lbm-body" class="max-w-4xl mx-auto p-4 sm:p-5 space-y-4 pb-20"></div>
+        </div>
+    </div>
+
+    <!-- MODAL TERIMA UNIT (CHECK-IN) & KALKULASI DENDA TOLERANSI 20 MENIT -->
+    <div id="modal-bike-checkin" class="hide fixed inset-0 z-[148] bg-black/85 backdrop-blur-sm flex items-center justify-center p-3 sm:p-4" onclick="if(event.target===this)closeBikeCheckinModal()">
+        <div class="app-card border rounded-3xl max-w-md w-full overflow-hidden shadow-2xl flex flex-col max-h-[92vh]" onclick="event.stopPropagation()">
+            <div class="px-5 py-3.5 border-b gold-border flex items-center justify-between shrink-0">
+                <div>
+                    <h3 class="font-extrabold text-sm sm:text-base"><i class="fa-solid fa-clipboard-check text-emerald-600 mr-1.5"></i>Terima Unit Sepeda (Check-In)</h3>
+                    <p id="bci-subtitle" class="text-[10px] app-muted"></p>
+                </div>
+                <button type="button" onclick="closeBikeCheckinModal()" class="w-8 h-8 rounded-full app-btn-sec flex items-center justify-center text-xs"><i class="fa-solid fa-xmark"></i></button>
+            </div>
+            <div id="bci-body" class="p-5 overflow-y-auto space-y-4 flex-1 text-xs"></div>
+            <div class="px-5 py-3.5 border-t gold-border flex gap-2 shrink-0">
+                <button type="button" onclick="closeBikeCheckinModal()" class="px-4 py-2.5 rounded-xl app-btn-sec text-xs font-bold">Batal</button>
+                <button type="button" id="btn-confirm-bike-checkin" onclick="confirmBikeCheckinSubmit()" class="flex-1 gowes-pill-btn py-2.5 rounded-xl text-xs uppercase shadow-lg"><i class="fa-solid fa-check-double mr-1"></i>Selesaikan &amp; Struk</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- MODAL LIVE KAMERA DOKUMEN (SEMPURNAKAN PDF) -->
+    <div id="modal-doc-camera" class="hide fixed inset-0 z-[157] bg-black flex flex-col overflow-hidden">
+        <div class="px-4 py-3 bg-black/80 text-white flex items-center justify-between border-b border-white/10 shrink-0">
+            <div>
+                <h3 class="font-extrabold text-sm"><i class="fa-solid fa-camera text-amber-400 mr-1.5"></i>Kamera Scan Dokumen</h3>
+                <p class="text-[10px] text-zinc-400">Arahkan dokumen ke dalam bingkai lalu tekan tombol potret</p>
+            </div>
+            <button type="button" onclick="closeDocCameraCapture()" class="w-9 h-9 rounded-full bg-white/15 text-white flex items-center justify-center text-sm"><i class="fa-solid fa-xmark"></i></button>
+        </div>
+        <div class="relative flex-1 bg-black flex items-center justify-center overflow-hidden">
+            <video id="doc-cam-video" autoplay playsinline muted class="w-full h-full object-cover"></video>
+            <div class="pointer-events-none absolute inset-6 sm:inset-12 border-2 border-dashed border-amber-400/80 rounded-2xl shadow-[0_0_0_9999px_rgba(0,0,0,0.35)]"></div>
+        </div>
+        <div class="px-5 py-4 bg-black/90 border-t border-white/10 flex items-center justify-between gap-3 shrink-0">
+            <button type="button" onclick="triggerFallbackCameraFileInput()" class="px-3.5 py-2 rounded-xl bg-white/15 text-white text-xs font-bold"><i class="fa-solid fa-mobile-screen mr-1"></i>Kamera Bawaan HP</button>
+            <button type="button" onclick="captureDocCameraFrame()" class="w-16 h-16 rounded-full bg-white border-4 border-amber-400 shadow-xl active:scale-90 transition flex items-center justify-center text-black text-xl" title="Potret Dokumen"><i class="fa-solid fa-camera"></i></button>
+            <button type="button" onclick="closeDocCameraCapture()" class="px-4 py-2 rounded-xl bg-white/10 text-zinc-300 text-xs font-bold">Batal</button>
+        </div>
+    </div>
+
+    <!-- MODAL CROP 4 SUDUT & AUTO-LURUSKAN POSISI MIRING (PERSPECTIVE DEWARP) -->
+    <div id="modal-doc-scanner" class="hide fixed inset-0 z-[158] bg-black/92 backdrop-blur-sm flex items-center justify-center p-3">
+        <div class="app-card border rounded-3xl max-w-lg w-full overflow-hidden shadow-2xl flex flex-col max-h-[94vh]">
+            <div class="px-4 py-3 border-b gold-border flex items-center justify-between gap-2 shrink-0">
+                <div class="min-w-0">
+                    <h3 class="font-extrabold text-sm truncate"><i class="fa-solid fa-crop-simple app-accent mr-1.5"></i>Crop 4 Sudut &amp; Luruskan Dokumen</h3>
+                    <p class="text-[10px] app-muted truncate">Geser 4 titik biru ke sudut kertas agar otomatis rata &amp; tegak lurus</p>
+                </div>
+                <button type="button" onclick="closeDocPerspectiveScanner()" class="w-8 h-8 rounded-full app-btn-sec flex items-center justify-center text-xs shrink-0"><i class="fa-solid fa-xmark"></i></button>
+            </div>
+            <div class="p-3.5 space-y-3 overflow-y-auto flex-1">
+                <div class="doc-scan-canvas-wrap">
+                    <canvas id="doc-scan-canvas"></canvas>
+                </div>
+                <div class="flex flex-wrap items-center justify-between gap-2 text-xs">
+                    <div class="flex gap-1.5">
+                        <button type="button" onclick="rotateDocScannerImage(90)" class="px-3 py-1.5 rounded-xl app-btn-sec text-[11px] font-bold"><i class="fa-solid fa-rotate-right mr-1"></i>Putar 90°</button>
+                        <button type="button" onclick="resetDocScannerCorners()" class="px-3 py-1.5 rounded-xl app-btn-sec text-[11px] font-bold"><i class="fa-solid fa-expand mr-1"></i>Reset Sudut</button>
+                    </div>
+                    <label class="flex items-center gap-1.5 text-[11px] font-bold cursor-pointer">
+                        <input type="checkbox" id="doc-scan-enhance-chk" checked class="w-4 h-4 accent-blue-600"> Auto-Scan Berwarna
+                    </label>
+                </div>
+            </div>
+            <div class="px-4 py-3 border-t gold-border flex gap-2 shrink-0">
+                <button type="button" onclick="closeDocPerspectiveScanner()" class="px-4 py-2.5 rounded-xl app-btn-sec text-xs font-bold">Batal</button>
+                <button type="button" id="btn-apply-doc-scan" onclick="applyDocPerspectiveScan()" class="flex-1 gold-pill-btn py-2.5 rounded-xl text-xs uppercase shadow-lg"><i class="fa-solid fa-wand-magic-sparkles mr-1"></i>Luruskan &amp; Simpan</button>
             </div>
         </div>
     </div>
@@ -1979,7 +2100,7 @@
                             </ul>
                             <div class="pt-3 border-t gold-border flex items-center justify-between text-[11px]">
                                 <span class="app-muted">Versi Aplikasi</span>
-                                <span class="px-2.5 py-0.5 rounded-full app-accent-bg app-accent font-extrabold">V14.9</span>
+                                <span class="px-2.5 py-0.5 rounded-full app-accent-bg app-accent font-extrabold">V14.10</span>
                             </div>
                         </div>
                     </div>
@@ -2384,12 +2505,19 @@
                 <div class="app-card-soft border rounded-2xl p-3.5 space-y-2.5">
                     <div class="flex flex-wrap items-center justify-between gap-2">
                         <label class="text-xs font-bold app-accent">1. Tambah Lampiran Dokumen Pelengkap (KTP, Ijazah, Transkrip, Sertifikat)</label>
-                        <label class="flex items-center gap-1.5 text-[11px] font-bold cursor-pointer"><input type="checkbox" id="smp-autoscan-chk" checked class="w-4 h-4 accent-blue-600"> Auto-Scan Bersih (Seperti Mesin Scanner)</label>
+                        <label class="flex items-center gap-1.5 text-[11px] font-bold cursor-pointer"><input type="checkbox" id="smp-autoscan-chk" checked class="w-4 h-4 accent-blue-600"> Auto-Scan Berwarna Jernih (Warna Asli Terjaga)</label>
                     </div>
-                    <label class="block gold-pill-btn py-2.5 rounded-xl text-center text-xs cursor-pointer shadow">
-                        <i class="fa-solid fa-camera mr-1.5"></i>Foto Kamera / Pilih Dokumen dari Galeri HP
-                        <input type="file" accept="image/*" multiple class="hide" onchange="addAttachmentsToSempurnakan(this)">
-                    </label>
+                    <div class="grid grid-cols-2 gap-2">
+                        <button type="button" onclick="openDocCameraCapture()" class="gold-pill-btn py-2.5 px-3 rounded-xl text-center text-xs shadow flex items-center justify-center gap-1.5">
+                            <i class="fa-solid fa-camera"></i> Ambil Foto (Kamera)
+                        </button>
+                        <label class="app-card border gold-border app-accent py-2.5 px-3 rounded-xl text-center text-xs font-bold cursor-pointer shadow-sm flex items-center justify-center gap-1.5 hover:brightness-95">
+                            <i class="fa-regular fa-images"></i> Pilih dari Galeri
+                            <input type="file" accept="image/*" multiple class="hide" onchange="addAttachmentsToSempurnakan(this,false)">
+                        </label>
+                    </div>
+                    <input type="file" id="smp-camera-fallback-inp" accept="image/*" capture="environment" class="hide" onchange="addAttachmentsToSempurnakan(this,true)">
+                    <p class="text-[10px] app-muted">Setiap foto bisa di-<strong>Crop 4 Sudut</strong> &amp; otomatis diluruskan posisinya jika kertas miring.</p>
                     <div id="smp-attachments-list" class="grid grid-cols-2 sm:grid-cols-3 gap-2.5 pt-1"></div>
                 </div>
 
@@ -2844,5 +2972,7 @@
     <script src="./js/gowes-admin.js"></script>
     <script src="./js/admin.js"></script>
     <script src="./js/app.js"></script>
+    <!-- LEMBAR KHUSUS CETAK / PRINT STRUK UNIVERSAL -->
+    <div id="receipt-print-sheet"></div>
 </body>
 </html>

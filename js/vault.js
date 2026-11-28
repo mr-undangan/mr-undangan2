@@ -294,7 +294,7 @@ async function requestPinResetToMaster() {
     document.getElementById("modal-pin-gate").classList.add("hide");
     if (res && res.ok) {
         showToast("Pengajuan lupa PIN terkirim ke Live Chat Founder!", "info");
-        if (typeof openFullChatOverlay === "function") openFullChatOverlay("admin_support");
+        if (typeof openFullChatOverlay === "function") openFullChatOverlay("founder_private");
     } else showToast("Gagal mengirim pengajuan.", "error");
 }
 
@@ -590,7 +590,7 @@ async function deleteSecretAlbumPhoto(photoId) {
 function askUpgradeProViaChat() {
     document.getElementById("modal-secret-album").classList.add("hide");
     if (typeof openFullChatOverlay === "function") {
-        openFullChatOverlay("admin_support");
+        openFullChatOverlay("founder_private");
         setTimeout(() => {
             const inp = document.getElementById("chat-input-text");
             if (inp) { inp.value = "Halo Admin, saya ingin upgrade ke Akun PRO (Centang Biru & penyimpanan Album tanpa batas)."; inp.focus(); }

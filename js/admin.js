@@ -1,6 +1,6 @@
 // =========================================================================
 // LEMBARKU & TITIK GOWES — ADMIN, WORKSPACE & FLEET CONTROLLER (js/admin.js)
-// Versi: V14.9 (Konten & Media Beranda Terpadu + Selective Zoom Foto)
+// Versi: V14.10 (Konten & Media Beranda Terpadu + Selective Zoom Foto)
 // =========================================================================
 let masterThemeCatFilter = "Pernikahan", masterThemeSearch = "", masterOrdersFilter = "all";
 let tbPhotosDraft = { cover: "", pria: "", wanita: "", couple: "", g1: "", g2: "", g3: "" };
@@ -167,7 +167,7 @@ function renderMasterHeaderStats() {
             : (Array.isArray(m.following) ? m.following.length : 0);
         
         const allInvs = Array.isArray(db.invitations) ? db.invitations : [];
-        const allPfs = Array.isArray(db.portfolios) ? db.portfolios : [];
+        const allPfs = (Array.isArray(db.portfolios) ? db.portfolios : []).filter(p => !(typeof isSystemCoinOrder === "function" && isSystemCoinOrder(p) && p.status === "Aktif"));
         const allRentals = Array.isArray(db.gowesRentals) ? db.gowesRentals : [];
         const totalProjectsCount = allInvs.length + allPfs.length + allRentals.length;
 
@@ -517,6 +517,12 @@ function renderStaffAdmin() {
     if (pbEl) {
         pbEl.innerText = `${totalPending} Menunggu (${pendingLbk} Berkas, ${pendingGowes} Sepeda)`;
     }
+    const liveOutCount = allRentals.filter(r => r && r.status === "Sedang Digunakan").length;
+    const livePill = document.getElementById("staff-live-bikes-cnt");
+    if (livePill) {
+        livePill.innerText = String(liveOutCount);
+        livePill.classList.toggle("hide", liveOutCount === 0);
+    }
     if (typeof updateChatBadges === "function") updateChatBadges();
 }
 
@@ -527,22 +533,33 @@ function buildFullOrderCardHtml(item, options = {}) {
 
     if (typeof isSystemCoinOrder === "function" && isSystemCoinOrder(item)) {
         const isProUp = item.docType === "pro_upgrade";
+        const isCvAddon = item.docType === "cv_edit_addon";
         const isDone = item.status === "Aktif";
         const priceInfo = item.totalPay ? `${fmtRp(item.totalPay)} (kode unik)` : fmtRp(item.price || 0);
-        return `<div class="app-card border rounded-2xl p-4 flex flex-col md:flex-row md:items-center justify-between gap-3 shadow-sm border-l-4 ${isProUp ? "border-l-blue-500" : "border-l-amber-500"}">
-            <div class="min-w-0 space-y-0.5">
+        const badgeCls = isCvAddon ? "bg-purple-600 text-white" : isProUp ? "bg-blue-600 text-white" : "bg-amber-400 text-black";
+        const badgeTxt = isCvAddon ? "TAMBAH +2X EDIT CV" : isProUp ? "UPGRADE AKUN PRO" : "TOP-UP COIN";
+        const borderCls = isCvAddon ? "border-l-purple-500" : isProUp ? "border-l-blue-500" : "border-l-amber-500";
+        const accLabel = isCvAddon ? "ACC +2x Edit CV" : isProUp ? "ACC PRO & Coin" : "ACC & Tambah Coin";
+        const detailSub = isCvAddon
+            ? `Nominal 50%: <strong class="app-accent">${priceInfo}</strong> • Target: <strong>${escHtml(item.targetTitle || "CV")}</strong>`
+            : `Nominal: <strong class="app-accent">${priceInfo}</strong> • Coin Diterima: <strong class="text-amber-600">+${Number(item.coinAmount || 0)} Coin</strong>`;
+
+        return `<div class="app-card border rounded-2xl p-4 flex flex-col md:flex-row md:items-center justify-between gap-3 shadow-sm border-l-4 ${borderCls}">
+            <div class="min-w-0 space-y-1">
                 <div class="flex flex-wrap items-center gap-1.5">
-                    <span class="text-[9px] px-2 py-0.5 rounded-full ${isProUp ? "bg-blue-600 text-white" : "bg-amber-400 text-black"} font-extrabold uppercase">${isProUp ? "UPGRADE AKUN PRO" : "TOP-UP COIN"}</span>
+                    <span class="text-[9px] px-2 py-0.5 rounded-full ${badgeCls} font-extrabold uppercase">${badgeTxt}</span>
                     <span class="text-[10px] px-2 py-0.5 rounded-full font-bold ${isDone ? "bg-emerald-500/20 text-emerald-600" : "bg-amber-500/20 app-accent"}">● ${escHtml(item.status)}</span>
+                    ${typeof formatHandledByBadgeHtml === "function" ? formatHandledByBadgeHtml(item) : ""}
                 </div>
                 <h4 class="font-bold text-sm mt-1 truncate">${escHtml(item.title)} <span class="text-xs app-muted font-normal">(@${escHtml(item.owner)})</span></h4>
-                <p class="text-xs app-muted">Nominal: <strong class="app-accent">${priceInfo}</strong> • Coin Diterima: <strong class="text-amber-600">+${Number(item.coinAmount || 0)} Coin</strong></p>
+                <p class="text-xs app-muted">${detailSub}</p>
             </div>
             <div class="flex flex-wrap gap-1.5">
                 ${item.owner ? `<button type="button" onclick="${preCloseJs}openFullChatOverlay('${esc(item.owner)}')" class="px-3 py-1.5 rounded-xl bg-emerald-600/15 border border-emerald-500/40 text-emerald-600 text-xs font-bold"><i class="fa-solid fa-comments mr-1"></i>Chat</button>` : ""}
                 ${item.paymentProof ? `<button type="button" onclick="viewOrderProof('pf',${item.id})" class="px-3 py-1.5 rounded-xl bg-blue-600/15 border border-blue-500/40 text-blue-600 text-xs font-bold">Bukti / SS</button>` : ""}
+                <button type="button" onclick="if(typeof openLembarkuOrderReceiptModal==='function')openLembarkuOrderReceiptModal('pf',${item.id})" class="px-3 py-1.5 rounded-xl app-card-soft border text-xs font-bold"><i class="fa-solid fa-receipt mr-1"></i>Struk</button>
                 ${!isDone
-                    ? `<button type="button" onclick="approveCoinOrProOrder(${item.id},this)" class="gold-pill-btn px-4 py-1.5 rounded-xl text-xs">✓ ${isProUp ? "ACC PRO & Coin" : "ACC & Tambah Coin"}</button>`
+                    ? `<button type="button" onclick="approveCoinOrProOrder(${item.id},this)" class="gold-pill-btn px-4 py-1.5 rounded-xl text-xs">✓ ${accLabel}</button>`
                     : `<span class="px-3 py-1.5 rounded-xl bg-emerald-500/15 text-emerald-600 text-xs font-extrabold">✓ Selesai</span>`}
                 ${!isStaffMode ? `<button type="button" onclick="deleteOrderItem('pf',${item.id})" class="px-2.5 py-1.5 rounded-xl bg-red-600/15 text-red-500 text-xs"><i class="fa-solid fa-trash"></i></button>` : ""}
             </div>
@@ -560,6 +577,7 @@ function buildFullOrderCardHtml(item, options = {}) {
                 <span class="text-[9px] px-2 py-0.5 rounded-full app-accent-bg app-accent font-extrabold">${typeTag}</span>
                 <span class="text-[10px] px-2 py-0.5 rounded-full font-bold ${item.status==="Aktif"?"bg-emerald-500/20 text-emerald-600":"bg-amber-500/20 app-accent"}">● ${escHtml(item.status)}</span>
                 ${hasRev ? `<span class="text-[9px] px-2 py-0.5 rounded-full bg-purple-500/20 text-purple-600 font-extrabold">REVISI MASUK</span>` : ""}
+                ${typeof formatHandledByBadgeHtml === "function" ? formatHandledByBadgeHtml(item) : ""}
             </div>
             <h4 class="font-bold text-sm mt-1 truncate">${escHtml(item.title)} <span class="text-xs app-muted font-normal">(@${escHtml(item.owner)}${item.brandName ? ` • ${escHtml(item.brandName)}` : ""})</span></h4>
             <p class="text-xs app-muted">${escHtml(isPf ? (item.themeName || item.themeId) : item.theme)} ${priceInfo ? `• <strong class="app-accent">${priceInfo}</strong>` : ""} • Revisi: ${item.editCount || 0}/2</p>
@@ -567,6 +585,7 @@ function buildFullOrderCardHtml(item, options = {}) {
         <div class="flex flex-wrap gap-1.5">
             ${item.owner ? `<button type="button" onclick="${preCloseJs}openFullChatOverlay('${esc(item.owner)}')" class="px-3 py-1.5 rounded-xl bg-emerald-600/15 border border-emerald-500/40 text-emerald-600 text-xs font-bold" title="Kirim Pesan ke Pemilik Order"><i class="fa-solid fa-comments mr-1"></i>Chat</button>` : ""}
             ${item.paymentProof ? `<button type="button" onclick="viewOrderProof('${item._kind}',${item.id})" class="px-3 py-1.5 rounded-xl bg-blue-600/15 border border-blue-500/40 text-blue-600 text-xs font-bold">Bukti / SS</button>` : ""}
+            <button type="button" onclick="if(typeof openLembarkuOrderReceiptModal==='function')openLembarkuOrderReceiptModal('${item._kind}',${item.id})" class="px-3 py-1.5 rounded-xl app-card-soft border text-xs font-bold"><i class="fa-solid fa-receipt mr-1"></i>Struk</button>
             <button type="button" onclick="${preCloseJs}${isPf ? `openEditPortfolio(${item.id},true)` : `openEditInvitation(${item.id},true)`}" class="px-3 py-1.5 rounded-xl app-card-soft border app-accent text-xs font-bold"><i class="fa-solid fa-pen mr-1"></i>Edit</button>
             ${hasRev ? `
                 <button type="button" onclick="${preCloseJs}${isPf ? `openPortfolioDocPreview(${item.id},true)` : `previewPendingRevision(${item.id})`}" class="px-3 py-1.5 rounded-xl app-btn-sec text-xs font-bold">Cek Revisi</button>
@@ -587,20 +606,36 @@ function buildUserOwnProjectCardHtml(doc, isCabangOwner = false) {
     const isPf = doc._kind === "pf";
     const isAktif = doc.status === "Aktif";
     const isPay = doc.status === "Menunggu Pembayaran";
-    const edLeft = Math.max(0, 2 - Number(doc.editCount || 0));
-    const canEdit = isCabangOwner ? true : (isAktif && edLeft > 0);
-    const editLbl = isCabangOwner ? "Edit" : `Edit (${edLeft}x)`;
+    const rule = typeof getProjectEditRuleInfo === "function"
+        ? getProjectEditRuleInfo(doc, isCabangOwner)
+        : { isCv: isPf && doc.docType !== "lamaran", isExpired: false, daysLeft: 21, maxEdits: 2, editCount: doc.editCount || 0, editsLeft: Math.max(0, 2 - (doc.editCount || 0)), canEdit: isAktif, canBuyCvAddon: false, addonHalfPrice: 10000 };
+
+    const editLbl = isCabangOwner
+        ? (rule.isCv ? "Edit" : `Edit (${rule.daysLeft}hr)`)
+        : (rule.isCv ? `Edit (${rule.editsLeft}x)` : `Edit (${rule.editsLeft}x • ${rule.daysLeft}hr)`);
     const typeTag = isPf ? (doc.docType === "lamaran" ? "SURAT LAMARAN" : "CV") : `UNDANGAN • ${escHtml(doc.category)}`;
     const preClose = "closeSoloStatsModal();closeUserProfileModalCustom();";
+
+    let editBtnHtml = "";
+    if (rule.isExpired) {
+        editBtnHtml = `<button type="button" disabled class="px-3 py-1.5 rounded-xl app-btn-sec opacity-50 text-xs font-bold"><i class="fa-solid fa-lock mr-1"></i>Masa Edit Habis</button>`;
+    } else if (rule.canEdit) {
+        editBtnHtml = `<button type="button" onclick="${preClose}${isPf ? `openEditPortfolio(${doc.id},${isCabangOwner})` : `openEditInvitation(${doc.id},${isCabangOwner})`}" class="px-3 py-1.5 rounded-xl app-card-soft border app-accent text-xs font-bold"><i class="fa-solid fa-pen mr-1"></i>${editLbl}</button>`;
+    } else if (rule.canBuyCvAddon) {
+        editBtnHtml = `<button type="button" onclick="${preClose}requestCvExtraEditsOrder(${doc.id})" class="px-3 py-1.5 rounded-xl bg-amber-500/18 border border-amber-500/40 text-amber-700 text-xs font-extrabold"><i class="fa-solid fa-plus mr-1"></i>+2x Edit (${fmtRp(rule.addonHalfPrice)})</button>`;
+    } else {
+        editBtnHtml = `<button type="button" disabled class="px-3 py-1.5 rounded-xl app-btn-sec opacity-50 text-xs font-bold"><i class="fa-solid fa-lock mr-1"></i>Edit</button>`;
+    }
 
     return `<div class="app-card border rounded-2xl p-4 space-y-3 shadow-sm">
         <div class="min-w-0">
             <div class="flex flex-wrap items-center gap-1.5">
                 <span class="text-[9px] px-2 py-0.5 rounded-full app-accent-bg app-accent font-extrabold">${typeTag}</span>
                 <span class="text-[10px] px-2 py-0.5 rounded-full font-bold ${isAktif?"bg-emerald-500/20 text-emerald-600":"bg-amber-500/20 app-accent"}">● ${escHtml(doc.status)}</span>
+                ${typeof formatHandledByBadgeHtml === "function" ? formatHandledByBadgeHtml(doc) : ""}
             </div>
             <h4 class="font-bold text-sm mt-1 truncate">${escHtml(doc.title)}</h4>
-            <p class="text-xs app-muted">${escHtml(isPf ? (doc.themeName || doc.themeId) : doc.theme)} • Revisi: ${doc.editCount || 0}/2</p>
+            <p class="text-xs app-muted">${escHtml(isPf ? (doc.themeName || doc.themeId) : doc.theme)} • Revisi: ${rule.editCount}/${rule.maxEdits}${!rule.isCv ? (rule.isExpired ? " • Batas 3 minggu habis" : ` • Sisa masa edit ${rule.daysLeft} hari`) : ""}</p>
         </div>
         <div class="flex flex-wrap gap-1.5">
             ${isPf
@@ -608,9 +643,8 @@ function buildUserOwnProjectCardHtml(doc, isCabangOwner = false) {
                 : (isAktif
                     ? `<button type="button" onclick="${preClose}openGuestView(${doc.id},'Tamu Kehormatan')" class="px-3 py-1.5 rounded-xl app-btn-sec text-xs font-bold"><i class="fa-regular fa-eye mr-1"></i>Lihat</button>`
                     : `<button type="button" disabled class="px-3 py-1.5 rounded-xl app-btn-sec opacity-50 text-xs font-bold"><i class="fa-solid fa-lock mr-1"></i>Lihat</button>`)}
-            ${canEdit
-                ? `<button type="button" onclick="${preClose}${isPf ? `openEditPortfolio(${doc.id},${isCabangOwner})` : `openEditInvitation(${doc.id},${isCabangOwner})`}" class="px-3 py-1.5 rounded-xl app-card-soft border app-accent text-xs font-bold"><i class="fa-solid fa-pen mr-1"></i>${editLbl}</button>`
-                : `<button type="button" disabled class="px-3 py-1.5 rounded-xl app-btn-sec opacity-50 text-xs font-bold"><i class="fa-solid fa-lock mr-1"></i>Edit</button>`}
+            ${editBtnHtml}
+            ${isAktif ? `<button type="button" onclick="if(typeof openLembarkuOrderReceiptModal==='function')openLembarkuOrderReceiptModal('${doc._kind}',${doc.id})" class="px-3 py-1.5 rounded-xl app-card-soft border text-xs font-bold"><i class="fa-solid fa-receipt mr-1"></i>Struk</button>` : ""}
             ${isPay
                 ? `<button type="button" onclick="${preClose}openUnifiedPayment('${isPf ? "portfolio" : "inv"}',${doc.id})" class="gold-pill-btn px-3.5 py-1.5 rounded-xl text-xs"><i class="fa-solid fa-qrcode mr-1"></i>Konfirmasi</button>`
                 : (isAktif && isPf
@@ -676,12 +710,21 @@ function previewPendingRevision(id) {
 
 async function setOrderStatus(kind, id, status, btn) {
     setBtnLoading(btn, true, "...");
+    const hbMeta = typeof buildHandledByMeta === "function" ? buildHandledByMeta() : null;
     if (kind === "pf") {
         const pf = (db.portfolios || []).find(p => String(p.id) === String(id));
-        if (pf) await apiAction({ action: "upsert_portfolio", portfolio: Object.assign({}, pf, { status }), adminActionLog: `Mengubah status ${pf.docType === "lamaran" ? "Lamaran" : "CV"} "${pf.title}" menjadi ${status}` });
+        if (pf) {
+            const upd = Object.assign({}, pf, { status, handledBy: hbMeta || pf.handledBy });
+            await apiAction({ action: "upsert_portfolio", portfolio: upd, adminActionLog: `Mengubah status ${pf.docType === "lamaran" ? "Lamaran" : "CV"} "${pf.title}" menjadi ${status}` });
+            Object.assign(pf, upd);
+        }
     } else {
         const inv = (db.invitations || []).find(i => String(i.id) === String(id));
-        if (inv) await apiAction({ action: "upsert_invitation", invitation: Object.assign({}, inv, { status }), adminActionLog: `Mengubah status undangan "${inv.title}" menjadi ${status}` });
+        if (inv) {
+            const upd = Object.assign({}, inv, { status, handledBy: hbMeta || inv.handledBy });
+            await apiAction({ action: "upsert_invitation", invitation: upd, adminActionLog: `Mengubah status undangan "${inv.title}" menjadi ${status}` });
+            Object.assign(inv, upd);
+        }
     }
     refreshAfterAdminOrderAction(`Status berkas diperbarui: ${status}`);
 }
@@ -689,6 +732,36 @@ async function setOrderStatus(kind, id, status, btn) {
 async function approveCoinOrProOrder(orderId, btn) {
     const order = (db.portfolios || []).find(p => String(p.id) === String(orderId));
     if (!order) return showToast("Data pesanan tidak ditemukan.", "error");
+    const hbMeta = typeof buildHandledByMeta === "function" ? buildHandledByMeta() : null;
+
+    // A. ACC TAMBAH +2X EDIT CV (50% HARGA CV)
+    if (order.docType === "cv_edit_addon") {
+        const targetCv = (db.portfolios || []).find(p => String(p.id) === String(order.targetPfId));
+        if (!targetCv) return showToast("Data CV tujuan tidak ditemukan.", "error");
+        const addCount = Math.max(1, Math.round(Number(order.addEdits || 2)));
+        const ok = await showConfirm(
+            "ACC Tambahan +2x Edit CV",
+            `Setujui pembayaran ${fmtRp(order.totalPay || order.price)} dari @${order.owner}? Batas revisi CV "${targetCv.title}" akan bertambah +${addCount}x.`,
+            "fa-solid fa-pen-to-square",
+            "Ya, Tambah +2x Edit"
+        );
+        if (!ok) return;
+
+        setBtnLoading(btn, true, "Memproses...");
+        const nextMaxEdits = Math.max(2, Number(targetCv.maxEdits || 2)) + addCount;
+        const updCv = Object.assign({}, targetCv, { maxEdits: nextMaxEdits, handledBy: hbMeta || targetCv.handledBy });
+        await apiAction({ action: "upsert_portfolio", portfolio: updCv, adminActionLog: `ACC +${addCount}x Edit CV "${targetCv.title}" (@${order.owner})` });
+        Object.assign(targetCv, updCv);
+
+        const updOrder = Object.assign({}, order, { status: "Aktif", approvedAt: Date.now(), handledBy: hbMeta });
+        await apiAction({ action: "upsert_portfolio", portfolio: updOrder });
+        Object.assign(order, updOrder);
+        setBtnLoading(btn, false);
+        refreshAfterAdminOrderAction(`Kuota edit CV "${targetCv.title}" ditambah +${addCount}x!`);
+        return;
+    }
+
+    // B. ACC TOP-UP COIN ATAU UPGRADE PRO
     const isProUp = order.docType === "pro_upgrade";
     const coinsToAdd = Math.max(0, Math.round(Number(order.coinAmount || 0)));
     const buyerKey = _normAdminUserKey(order.owner);
@@ -711,7 +784,7 @@ async function approveCoinOrProOrder(orderId, btn) {
             updatedBuyer,
             coinsToAdd,
             isProUp ? "Bonus Coin Upgrade PRO" : `Top-Up QRIS: ${order.themeName || order.title}`,
-            `Disetujui oleh Founder`,
+            hbMeta ? `Disetujui oleh ${hbMeta.name}` : "Disetujui oleh Founder",
             nextQuota
         );
     }
@@ -719,13 +792,15 @@ async function approveCoinOrProOrder(orderId, btn) {
     await apiAction({ action: "upsert_user", oldUsername: buyer.username, user: updatedBuyer });
     if (typeof ensureUserInLocalDb === "function") ensureUserInLocalDb(updatedBuyer);
 
+    const updOrder = Object.assign({}, order, { status: "Aktif", approvedAt: Date.now(), handledBy: hbMeta });
     await apiAction({
         action: "upsert_portfolio",
-        portfolio: Object.assign({}, order, { status: "Aktif", approvedAt: Date.now() }),
+        portfolio: updOrder,
         adminActionLog: isProUp
             ? `ACC Upgrade PRO +${coinsToAdd} Coin untuk @${buyer.username}`
             : `ACC Top-Up +${coinsToAdd} Coin untuk @${buyer.username}`
     });
+    Object.assign(order, updOrder);
     setBtnLoading(btn, false);
     refreshAfterAdminOrderAction(isProUp
         ? `@${buyer.username} resmi PRO +${coinsToAdd} Coin!`
